@@ -167,47 +167,66 @@ async function handleBookingFlow(to, phoneNumberId, message, userState) {
       }
       const doctor = config.doctors.find(d => d.id === sel.replace('doctor_', ''));
       setState(to, { ...userState, state: STATE.BOOKING_DATE, data: { ...data, doctor } });
-      await sendText(to, phoneNumberId,
-        isAr
-          ? `ممتاز! اخترت ${doctor.name_ar} 👍\n\nيرجى كتابة التاريخ المفضل:\n*DD/MM/YYYY*\nمثال: 20/03/2026`
-          : `Great choice! ${doctor.name_en} 👍\n\nPlease type your preferred date:\n*DD/MM/YYYY*\nExample: 20/03/2026`
+
+      // Build next 14 days list
+      const dateRows = [];
+      const arabicDays = ['الأحد','الاثنين','الثلاثاء','الأربعاء','الخميس','الجمعة','السبت'];
+      const englishDays = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+      const arabicMonths = ['يناير','فبراير','مارس','أبريل','مايو','يونيو','يوليو','أغسطس','سبتمبر','أكتوبر','نوفمبر','ديسمبر'];
+      for (let i = 1; i <= 14; i++) {
+        const d = new Date();
+        d.setDate(d.getDate() + i);
+        const dd = String(d.getDate()).padStart(2, '0');
+        const mm = String(d.getMonth() + 1).padStart(2, '0');
+        const yyyy = d.getFullYear();
+        const dayIdx = d.getDay();
+        const id = `date_${yyyy}-${mm}-${dd}`;
+        const display = `${dd}/${mm}/${yyyy}`;
+        const titleAr = `${arabicDays[dayIdx]} ${d.getDate()} ${arabicMonths[d.getMonth()]}`;
+        const titleEn = `${englishDays[dayIdx]} ${dd}/${mm}`;
+        dateRows.push({ id, title: isAr ? titleAr : titleEn, display });
+      }
+
+      await sendList(to, phoneNumberId,
+        isAr ? 'اختر التاريخ' : 'Choose Date',
+        isAr ? `ممتاز! اخترت ${doctor.name_ar} 👍\n\nاختر التاريخ المناسب:` : `Great choice! ${doctor.name_en} 👍\n\nSelect your preferred date:`,
+        isAr ? 'اختر' : 'Select',
+        [{ title: isAr ? 'المواعيد المتاحة' : 'Available Dates', rows: dateRows.slice(0, 10) }]
       );
+      // Store dateRows in state so we can look up display value
+      setState(to, { ...userState, state: STATE.BOOKING_DATE, data: { ...data, doctor, dateRows } });
       break;
     }
 
     case STATE.BOOKING_DATE: {
-      if (!text) {
-        await sendText(to, phoneNumberId, isAr ? 'يرجى كتابة التاريخ' : 'Please type the date');
+      const dateSel = listId;
+      if (!dateSel?.startsWith('date_')) {
+        await sendText(to, phoneNumberId, isAr ? 'يرجى الاختيار من القائمة 👆' : 'Please select from the list 👆');
         return;
       }
-      const match = text.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
-      if (!match) {
-        await sendText(to, phoneNumberId,
-          isAr ? '⚠️ صيغة غير صحيحة. يرجى الكتابة هكذا: DD/MM/YYYY' : '⚠️ Invalid format. Please use: DD/MM/YYYY'
-        );
-        return;
-      }
-      const formattedDate = `${match[3]}-${match[2]}-${match[1]}`;
-      setState(to, { ...userState, state: STATE.BOOKING_TIME, data: { ...data, date: formattedDate, dateDisplay: text } });
+      const formattedDate = dateSel.replace('date_', '');
+      const parts = formattedDate.split('-');
+      const dateDisplay = `${parts[2]}/${parts[1]}/${parts[0]}`;
+      setState(to, { ...userState, state: STATE.BOOKING_TIME, data: { ...data, date: formattedDate, dateDisplay } });
+
+      const timeSlots = [
+        { id: 'time_07:00', ar: '٧:٠٠ صباحاً',  en: '7:00 AM',  label: '07:00' },
+        { id: 'time_08:00', ar: '٨:٠٠ صباحاً',  en: '8:00 AM',  label: '08:00' },
+        { id: 'time_09:00', ar: '٩:٠٠ صباحاً',  en: '9:00 AM',  label: '09:00' },
+        { id: 'time_10:00', ar: '١٠:٠٠ صباحاً', en: '10:00 AM', label: '10:00' },
+        { id: 'time_11:00', ar: '١١:٠٠ صباحاً', en: '11:00 AM', label: '11:00' },
+        { id: 'time_14:00', ar: '٢:٠٠ مساءً',   en: '2:00 PM',  label: '14:00' },
+        { id: 'time_15:00', ar: '٣:٠٠ مساءً',   en: '3:00 PM',  label: '15:00' },
+        { id: 'time_16:00', ar: '٤:٠٠ مساءً',   en: '4:00 PM',  label: '16:00' },
+        { id: 'time_17:00', ar: '٥:٠٠ مساءً',   en: '5:00 PM',  label: '17:00' },
+        { id: 'time_19:00', ar: '٧:٠٠ مساءً',   en: '7:00 PM',  label: '19:00' },
+      ];
       await sendList(to, phoneNumberId,
         isAr ? 'اختر الوقت' : 'Choose Time',
         isAr ? 'يرجى اختيار الوقت المناسب:' : 'Please select your preferred time:',
         isAr ? 'اختر الوقت' : 'Select Time',
-        [{
-          title: isAr ? 'الأوقات المتاحة' : 'Available Times',
-          rows: [
-            { id: 'time_07:00', title: isAr ? '٧:٠٠ صباحاً'  : '7:00 AM'  },
-            { id: 'time_08:00', title: isAr ? '٨:٠٠ صباحاً'  : '8:00 AM'  },
-            { id: 'time_09:00', title: isAr ? '٩:٠٠ صباحاً'  : '9:00 AM'  },
-            { id: 'time_10:00', title: isAr ? '١٠:٠٠ صباحاً' : '10:00 AM' },
-            { id: 'time_11:00', title: isAr ? '١١:٠٠ صباحاً' : '11:00 AM' },
-            { id: 'time_14:00', title: isAr ? '٢:٠٠ مساءً'   : '2:00 PM'  },
-            { id: 'time_15:00', title: isAr ? '٣:٠٠ مساءً'   : '3:00 PM'  },
-            { id: 'time_16:00', title: isAr ? '٤:٠٠ مساءً'   : '4:00 PM'  },
-            { id: 'time_17:00', title: isAr ? '٥:٠٠ مساءً'   : '5:00 PM'  },
-            { id: 'time_19:00', title: isAr ? '٧:٠٠ مساءً'   : '7:00 PM'  },
-          ]
-        }]
+        [{ title: isAr ? 'الأوقات المتاحة' : 'Available Times',
+           rows: timeSlots.map(t => ({ id: t.id, title: isAr ? t.ar : t.en })) }]
       );
       break;
     }
@@ -218,13 +237,26 @@ async function handleBookingFlow(to, phoneNumberId, message, userState) {
         await sendText(to, phoneNumberId, isAr ? 'يرجى اختيار الوقت من القائمة 👆' : 'Please select a time from the list 👆');
         return;
       }
+      const timeLabels = {
+        'time_07:00': { ar: '٧:٠٠ صباحاً',  en: '7:00 AM'  },
+        'time_08:00': { ar: '٨:٠٠ صباحاً',  en: '8:00 AM'  },
+        'time_09:00': { ar: '٩:٠٠ صباحاً',  en: '9:00 AM'  },
+        'time_10:00': { ar: '١٠:٠٠ صباحاً', en: '10:00 AM' },
+        'time_11:00': { ar: '١١:٠٠ صباحاً', en: '11:00 AM' },
+        'time_14:00': { ar: '٢:٠٠ مساءً',   en: '2:00 PM'  },
+        'time_15:00': { ar: '٣:٠٠ مساءً',   en: '3:00 PM'  },
+        'time_16:00': { ar: '٤:٠٠ مساءً',   en: '4:00 PM'  },
+        'time_17:00': { ar: '٥:٠٠ مساءً',   en: '5:00 PM'  },
+        'time_19:00': { ar: '٧:٠٠ مساءً',   en: '7:00 PM'  },
+      };
       const time = timeSel.replace('time_', '');
-      setState(to, { ...userState, state: STATE.BOOKING_CONFIRM, data: { ...data, time } });
+      const timeDisplay = isAr ? timeLabels[timeSel]?.ar : timeLabels[timeSel]?.en;
+      setState(to, { ...userState, state: STATE.BOOKING_CONFIRM, data: { ...data, time, timeDisplay } });
       const doctorName = isAr ? data.doctor.name_ar : data.doctor.name_en;
       await sendInteractiveButtons(to, phoneNumberId,
         isAr
-          ? `📋 *ملخص الحجز*\n\n👤 الاسم: ${data.name}\n👨‍⚕️ الطبيب: ${doctorName}\n📅 التاريخ: ${data.dateDisplay}\n🕐 الوقت: ${time}\n\nهل تريد تأكيد الموعد؟`
-          : `📋 *Booking Summary*\n\n👤 Name: ${data.name}\n👨‍⚕️ Doctor: ${doctorName}\n📅 Date: ${data.dateDisplay}\n🕐 Time: ${time}\n\nConfirm your appointment?`,
+          ? `📋 *ملخص الحجز*\n\n👤 الاسم: ${data.name}\n👨‍⚕️ الطبيب: ${doctorName}\n📅 التاريخ: ${data.dateDisplay}\n🕐 الوقت: ${timeDisplay}\n\nهل تريد تأكيد الموعد؟`
+          : `📋 *Booking Summary*\n\n👤 Name: ${data.name}\n👨‍⚕️ Doctor: ${doctorName}\n📅 Date: ${data.dateDisplay}\n🕐 Time: ${timeDisplay}\n\nConfirm your appointment?`,
         [
           { id: 'confirm_yes', title: isAr ? '✅ تأكيد' : '✅ Confirm' },
           { id: 'confirm_no',  title: isAr ? '❌ إلغاء' : '❌ Cancel'  },
@@ -245,11 +277,11 @@ async function handleBookingFlow(to, phoneNumberId, message, userState) {
 
         if (result.success) {
           // Move to registration step
-          setState(to, { ...userState, state: STATE.REGISTRATION, data: { ...data, booking: { doctor: data.doctor, dateDisplay: data.dateDisplay, time: data.time }, regStep: null, awaitingCPR: false } });
+          setState(to, { ...userState, state: STATE.REGISTRATION, data: { ...data, booking: { doctor: data.doctor, dateDisplay: data.dateDisplay, time: data.time, timeDisplay: data.timeDisplay }, regStep: null, awaitingCPR: false } });
           await sendText(to, phoneNumberId,
             isAr
-              ? `✅ *تم تأكيد الموعد!*\n\n👤 ${data.name}\n👨‍⚕️ ${data.doctor.name_ar}\n📅 ${data.dateDisplay} - 🕐 ${data.time}`
-              : `✅ *Appointment Confirmed!*\n\n👤 ${data.name}\n👨‍⚕️ ${data.doctor.name_en}\n📅 ${data.dateDisplay} - 🕐 ${data.time}`
+              ? `✅ *تم تأكيد الموعد!*\n\n👤 ${data.name}\n👨‍⚕️ ${data.doctor.name_ar}\n📅 ${data.dateDisplay} - 🕐 ${data.timeDisplay || data.time}`
+              : `✅ *Appointment Confirmed!*\n\n👤 ${data.name}\n👨‍⚕️ ${data.doctor.name_en}\n📅 ${data.dateDisplay} - 🕐 ${data.timeDisplay || data.time}`
           );
           await sendRegistrationRequest(to, phoneNumberId, lang);
         } else {
@@ -273,7 +305,7 @@ async function handleBookingFlow(to, phoneNumberId, message, userState) {
 async function handleMessage(from, message, phoneNumberId) {
   let userState = getState(from);
 
-  // Always update language from incoming text
+  // Only update language from free text, not button/list taps
   if (message.type === 'text') {
     const detectedLang = detectLanguage(message.text?.body || '');
     userState = { ...userState, lang: detectedLang };
