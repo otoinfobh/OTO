@@ -24,6 +24,18 @@ app.get('/webhook', (req, res) => {
   }
 });
 
+// Deduplication cache — stores processed message IDs for 60 seconds
+const processedIds = new Map();
+function isDuplicate(id) {
+  if (processedIds.has(id)) return true;
+  processedIds.set(id, Date.now());
+  // Clean up entries older than 60 seconds
+  for (const [key, ts] of processedIds) {
+    if (Date.now() - ts > 60000) processedIds.delete(key);
+  }
+  return false;
+}
+
 // Receive incoming WhatsApp messages
 app.post('/webhook', async (req, res) => {
   res.sendStatus(200); // Always respond immediately to Meta
@@ -42,6 +54,11 @@ app.post('/webhook', async (req, res) => {
     const message       = messages[0];
     const from          = message.from;
     const phoneNumberId = value.metadata.phone_number_id;
+
+    if (isDuplicate(message.id)) {
+      console.log(`⚠️ Duplicate message ignored: ${message.id}`);
+      return;
+    }
 
     console.log(`📨 Message from ${from}: ${JSON.stringify(message)}`);
     await handleMessage(from, message, phoneNumberId);
