@@ -1,7 +1,7 @@
 const { sendText, sendInteractiveButtons, sendList } = require('./whatsapp');
 const { getState, setState, clearState, STATE } = require('./state');
 const { getClaudeResponse, scanCPRImage } = require('./claude');
-const { createAppointment } = require('./calendar');
+const { createAppointment, getAvailableSlots, getAvailableDates, findSoonestSlot, findBestDoctor, formatTime, formatTimeDisplay } = require('./calendar');
 const config = require('./config');
 
 function detectLanguage(text) {
@@ -11,20 +11,7 @@ function detectLanguage(text) {
 const GREETINGS   = ['hi', 'hello', 'hey', 'menu', 'مرحبا', 'هاي', 'السلام', 'أهلاً', 'اهلا', 'مرحباً', 'مساء', 'صباح', 'هلا'];
 const RESET_WORDS = ['reset', 'cancel', 'إلغاء', 'الغاء', 'رجوع', 'مسح', 'ابدأ', 'start'];
 
-const TIME_LABELS = {
-  'time_07:00': { ar: '٧:٠٠ صباحاً',  en: '7:00 AM',  val: '07:00' },
-  'time_08:00': { ar: '٨:٠٠ صباحاً',  en: '8:00 AM',  val: '08:00' },
-  'time_09:00': { ar: '٩:٠٠ صباحاً',  en: '9:00 AM',  val: '09:00' },
-  'time_10:00': { ar: '١٠:٠٠ صباحاً', en: '10:00 AM', val: '10:00' },
-  'time_11:00': { ar: '١١:٠٠ صباحاً', en: '11:00 AM', val: '11:00' },
-  'time_14:00': { ar: '٢:٠٠ مساءً',   en: '2:00 PM',  val: '14:00' },
-  'time_15:00': { ar: '٣:٠٠ مساءً',   en: '3:00 PM',  val: '15:00' },
-  'time_16:00': { ar: '٤:٠٠ مساءً',   en: '4:00 PM',  val: '16:00' },
-  'time_17:00': { ar: '٥:٠٠ مساءً',   en: '5:00 PM',  val: '17:00' },
-  'time_19:00': { ar: '٧:٠٠ مساءً',   en: '7:00 PM',  val: '19:00' },
-};
-
-// ── 30-minute inactivity timeout ─────────────────────────────────────────────
+// ── 30-min inactivity timeout ─────────────────────────────────────────────────
 const TIMEOUT_MS = 30 * 60 * 1000;
 const timeouts   = new Map();
 
@@ -32,8 +19,7 @@ function scheduleTimeout(from, phoneNumberId, lang) {
   if (timeouts.has(from)) clearTimeout(timeouts.get(from));
   const t = setTimeout(async () => {
     timeouts.delete(from);
-    const s = getState(from);
-    if (s.state !== STATE.IDLE) {
+    if (getState(from).state !== STATE.IDLE) {
       clearState(from);
       const isAr = lang === 'ar';
       await sendText(from, phoneNumberId,
@@ -48,36 +34,10 @@ function scheduleTimeout(from, phoneNumberId, lang) {
 }
 
 function cancelTimeout(from) {
-  if (timeouts.has(from)) {
-    clearTimeout(timeouts.get(from));
-    timeouts.delete(from);
-  }
+  if (timeouts.has(from)) { clearTimeout(timeouts.get(from)); timeouts.delete(from); }
 }
 
-// ── Date list builder ─────────────────────────────────────────────────────────
-function buildDateRows(isAr) {
-  const arabicDays   = ['الأحد','الاثنين','الثلاثاء','الأربعاء','الخميس','الجمعة','السبت'];
-  const englishDays  = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-  const arabicMonths = ['يناير','فبراير','مارس','أبريل','مايو','يونيو','يوليو','أغسطس','سبتمبر','أكتوبر','نوفمبر','ديسمبر'];
-  const rows = [];
-  for (let i = 1; i <= 10; i++) {
-    const d = new Date();
-    d.setDate(d.getDate() + i);
-    const dd   = String(d.getDate()).padStart(2, '0');
-    const mm   = String(d.getMonth() + 1).padStart(2, '0');
-    const yyyy = d.getFullYear();
-    const day  = d.getDay();
-    rows.push({
-      id:    `date_${yyyy}-${mm}-${dd}`,
-      title: isAr
-        ? `${arabicDays[day]} ${d.getDate()} ${arabicMonths[d.getMonth()]}`
-        : `${englishDays[day]} ${dd}/${mm}`,
-    });
-  }
-  return rows;
-}
-
-// ── Shared UI helpers ─────────────────────────────────────────────────────────
+// ── UI helpers ────────────────────────────────────────────────────────────────
 async function sendMainMenu(to, phoneNumberId, lang) {
   const isAr = lang === 'ar';
   await sendInteractiveButtons(to, phoneNumberId,
@@ -109,13 +69,15 @@ async function sendRegistrationRequest(to, phoneNumberId, lang) {
 }
 
 async function notifyClinic(patientInfo, bookingData, lang) {
-  const isAr    = lang === 'ar';
-  const phone   = config.clinic.notifyPhone || config.clinic.phone;
-  const doctor  = bookingData?.doctor
+  const isAr   = lang === 'ar';
+  const phone  = config.clinic.notifyPhone || config.clinic.phone;
+  const doctor = bookingData?.doctor
     ? (isAr ? bookingData.doctor.name_ar : bookingData.doctor.name_en) : '-';
+  const proc   = bookingData?.procedure
+    ? (isAr ? bookingData.procedure.name_ar : bookingData.procedure.name_en) : '-';
   const msg = isAr
-    ? `🆕 *مريض جديد*\n\n👤 ${patientInfo.fullName || '-'}\n🪪 CPR: ${patientInfo.cpr || '-'}\n🎂 ${patientInfo.dob || '-'}\n🌍 ${patientInfo.nationality || '-'}\n👨‍⚕️ ${doctor}\n📅 ${bookingData?.dateDisplay || '-'} - 🕐 ${bookingData?.timeDisplay || bookingData?.time || '-'}\n📞 ${patientInfo.phone}`
-    : `🆕 *New Patient*\n\n👤 ${patientInfo.fullName || '-'}\n🪪 CPR: ${patientInfo.cpr || '-'}\n🎂 DOB: ${patientInfo.dob || '-'}\n🌍 ${patientInfo.nationality || '-'}\n👨‍⚕️ ${doctor}\n📅 ${bookingData?.dateDisplay || '-'} - 🕐 ${bookingData?.timeDisplay || bookingData?.time || '-'}\n📞 ${patientInfo.phone}`;
+    ? `🆕 *مريض جديد*\n\n👤 ${patientInfo.fullName || '-'}\n🪪 CPR: ${patientInfo.cpr || '-'}\n🎂 ${patientInfo.dob || '-'}\n🌍 ${patientInfo.nationality || '-'}\n👨‍⚕️ ${doctor}\n🦷 ${proc}\n📅 ${bookingData?.dateDisplay || '-'} - 🕐 ${bookingData?.timeDisplay || '-'}\n📞 ${patientInfo.phone}`
+    : `🆕 *New Patient*\n\n👤 ${patientInfo.fullName || '-'}\n🪪 CPR: ${patientInfo.cpr || '-'}\n🎂 DOB: ${patientInfo.dob || '-'}\n🌍 ${patientInfo.nationality || '-'}\n👨‍⚕️ ${doctor}\n🦷 ${proc}\n📅 ${bookingData?.dateDisplay || '-'} - 🕐 ${bookingData?.timeDisplay || '-'}\n📞 ${patientInfo.phone}`;
   const { sendText: notify } = require('./whatsapp');
   await notify(phone, process.env.PHONE_NUMBER_ID, msg);
 }
@@ -132,8 +94,7 @@ async function handleRegistration(to, phoneNumberId, message, userState) {
     try {
       const extracted = await scanCPRImage(message.image.id);
       await notifyClinic({ ...extracted, phone: to }, data.booking, lang);
-      cancelTimeout(to);
-      clearState(to);
+      cancelTimeout(to); clearState(to);
       await sendText(to, phoneNumberId,
         isAr
           ? `✅ تم تسجيلك!\n\n👤 ${extracted.fullName || '-'}\n🪪 ${extracted.cpr || '-'}\n\nنراك قريباً 😊`
@@ -168,19 +129,15 @@ async function handleRegistration(to, phoneNumberId, message, userState) {
   if (text && data.regStep === 'waiting') {
     const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
     const patientInfo = {
-      fullName:    lines[0] || '-',
-      cpr:         lines[1] || '-',
-      dob:         lines[2] || '-',
-      nationality: lines[3] || '-',
-      phone: to,
+      fullName: lines[0] || '-', cpr: lines[1] || '-',
+      dob: lines[2] || '-', nationality: lines[3] || '-', phone: to,
     };
     await notifyClinic(patientInfo, data.booking, lang);
-    cancelTimeout(to);
-    clearState(to);
+    cancelTimeout(to); clearState(to);
     await sendText(to, phoneNumberId,
       isAr
-        ? `✅ *تم التسجيل!*\n\n👤 ${patientInfo.fullName}\n📅 ${data.booking?.dateDisplay || ''} - 🕐 ${data.booking?.timeDisplay || data.booking?.time || ''}\n\nنراك قريباً 😊`
-        : `✅ *Registration complete!*\n\n👤 ${patientInfo.fullName}\n📅 ${data.booking?.dateDisplay || ''} - 🕐 ${data.booking?.timeDisplay || data.booking?.time || ''}\n\nSee you soon! 😊`
+        ? `✅ *تم التسجيل!*\n\n👤 ${patientInfo.fullName}\n📅 ${data.booking?.dateDisplay || ''} - 🕐 ${data.booking?.timeDisplay || ''}\n\nنراك قريباً 😊`
+        : `✅ *Registration complete!*\n\n👤 ${patientInfo.fullName}\n📅 ${data.booking?.dateDisplay || ''} - 🕐 ${data.booking?.timeDisplay || ''}\n\nSee you soon! 😊`
     );
     return;
   }
@@ -194,82 +151,167 @@ async function handleBookingFlow(to, phoneNumberId, message, userState) {
   const buttonId = message.interactive?.button_reply?.id;
   const listId   = message.interactive?.list_reply?.id;
 
-  console.log(`📋 State: ${state} | buttonId: ${buttonId} | listId: ${listId} | text: ${text}`);
+  console.log(`📋 State:${state} btn:${buttonId} list:${listId} txt:${text}`);
 
   switch (state) {
 
+    // ── Name ──────────────────────────────────────────────────────────────────
     case STATE.BOOKING_NAME: {
       if (!text) {
         await sendText(to, phoneNumberId, isAr ? 'يرجى كتابة اسمك الكامل ✍️' : 'Please type your full name ✍️');
         return;
       }
-      setState(to, { ...userState, state: STATE.BOOKING_DOCTOR, data: { ...data, name: text } });
+      setState(to, { ...userState, state: STATE.BOOKING_PROCEDURE, data: { ...data, name: text } });
       await sendList(to, phoneNumberId,
-        isAr ? 'اختر الطبيب' : 'Choose Doctor',
-        isAr ? `شكراً ${text}! اختر الطبيب المفضل:` : `Thanks ${text}! Select your preferred doctor:`,
+        isAr ? 'اختر الإجراء' : 'Choose Procedure',
+        isAr ? `شكراً ${text}! ما هو سبب زيارتك؟` : `Thanks ${text}! What brings you in today?`,
         isAr ? 'اختر' : 'Select',
-        [{ title: isAr ? 'الأطباء المتاحون' : 'Available Doctors',
-           rows: config.doctors.map(d => ({ id: `doctor_${d.id}`, title: isAr ? d.name_ar : d.name_en })) }]
+        [{ title: isAr ? 'الإجراءات المتاحة' : 'Available Procedures',
+           rows: config.procedures.map(p => ({
+             id:          `proc_${p.id}`,
+             title:       isAr ? p.name_ar : p.name_en,
+             description: `${p.price} BD - ${p.duration} min`,
+           }))
+        }]
       );
       break;
     }
 
+    // ── Procedure ─────────────────────────────────────────────────────────────
+    case STATE.BOOKING_PROCEDURE: {
+      const sel = listId || buttonId;
+      if (!sel?.startsWith('proc_')) {
+        await sendText(to, phoneNumberId, isAr ? 'يرجى الاختيار من القائمة 👆' : 'Please select from the list 👆');
+        return;
+      }
+      const procedure = config.procedures.find(p => `proc_${p.id}` === sel);
+      if (!procedure) return;
+
+      setState(to, { ...userState, state: STATE.BOOKING_DOCTOR, data: { ...data, procedure } });
+
+      // Filter doctors: hide senior for non-senior procedures (cleaning counts as non-senior)
+      // Dr. Ali Jawad (senior) is hidden for cleaning & consultation
+      const hideSeniorFor = ['cleaning', 'consult'];
+      const availableDocs = hideSeniorFor.includes(procedure.id)
+        ? config.doctors.filter(d => !d.senior)
+        : config.doctors;
+
+      const rows = [
+        { id: 'doctor_any', title: isAr ? '👨‍⚕️ أي دكتور متاح' : '👨‍⚕️ Any available doctor' },
+        ...availableDocs.map(d => ({ id: `doctor_${d.id}`, title: isAr ? d.name_ar : d.name_en })),
+      ];
+
+      await sendList(to, phoneNumberId,
+        isAr ? 'اختر الطبيب' : 'Choose Doctor',
+        isAr ? `ممتاز! اخترت ${procedure.name_ar}.\n\nمع أي طبيب تفضل؟` : `Got it! ${procedure.name_en}.\n\nWhich doctor do you prefer?`,
+        isAr ? 'اختر' : 'Select',
+        [{ title: isAr ? 'الأطباء المتاحون' : 'Available Doctors', rows }]
+      );
+      break;
+    }
+
+    // ── Doctor ────────────────────────────────────────────────────────────────
     case STATE.BOOKING_DOCTOR: {
       const sel = listId || buttonId;
-      console.log(`🩺 Doctor sel: ${sel}`);
       if (!sel?.startsWith('doctor_')) {
         await sendText(to, phoneNumberId, isAr ? 'يرجى الاختيار من القائمة 👆' : 'Please select from the list 👆');
         return;
       }
-      const doctor = config.doctors.find(d => `doctor_${d.id}` === sel);
-      if (!doctor) {
-        console.error(`Doctor not found for sel: ${sel}`);
-        await sendText(to, phoneNumberId, isAr ? 'حدث خطأ، يرجى المحاولة مجدداً' : 'An error occurred, please try again');
+
+      const procedure = data.procedure;
+      await sendText(to, phoneNumberId, isAr ? '⏳ جاري التحقق من المواعيد المتاحة...' : '⏳ Checking available appointments...');
+
+      // Handle "any doctor"
+      if (sel === 'doctor_any') {
+        const result = await findBestDoctor(procedure.duration);
+        if (!result) {
+          await sendText(to, phoneNumberId,
+            isAr ? `عذراً، لا توجد مواعيد متاحة خلال الـ 30 يوم القادمة 😔\nتواصل معنا: ${config.clinic.phone}` : `Sorry, no available slots in the next 30 days 😔\nCall us: ${config.clinic.phone}`
+          );
+          clearState(to); return;
+        }
+        // Auto-assign doctor silently, jump straight to date
+        const dd = result.date.split('-');
+        const dateDisplay = `${dd[2]}/${dd[1]}/${dd[0]}`;
+        setState(to, { ...userState, state: STATE.BOOKING_DATE, data: { ...data, doctor: result.doctor, anyDoctor: true } });
+        // Now show available dates for this doctor
+        const dates = await getAvailableDates(result.doctor.id, procedure.duration);
+        await sendDateList(to, phoneNumberId, isAr, dates);
         return;
       }
+
+      const doctor = config.doctors.find(d => `doctor_${d.id}` === sel);
+      if (!doctor) return;
+
+      const dates = await getAvailableDates(doctor.id, procedure.duration);
+      if (dates.length === 0) {
+        await sendText(to, phoneNumberId,
+          isAr ? `عذراً، لا توجد مواعيد متاحة مع ${doctor.name_ar} خلال الـ 30 يوم القادمة 😔\nتواصل معنا: ${config.clinic.phone}` : `Sorry, no available slots with ${doctor.name_en} in the next 30 days 😔\nCall us: ${config.clinic.phone}`
+        );
+        clearState(to); return;
+      }
+
       setState(to, { ...userState, state: STATE.BOOKING_DATE, data: { ...data, doctor } });
-      await sendList(to, phoneNumberId,
-        isAr ? 'اختر التاريخ' : 'Choose Date',
-        isAr ? `ممتاز! اخترت ${doctor.name_ar} 👍\n\nاختر التاريخ:` : `Great! ${doctor.name_en} 👍\n\nSelect your preferred date:`,
-        isAr ? 'اختر' : 'Select',
-        [{ title: isAr ? 'المواعيد المتاحة' : 'Available Dates', rows: buildDateRows(isAr) }]
-      );
+      await sendDateList(to, phoneNumberId, isAr, dates);
       break;
     }
 
+    // ── Date ──────────────────────────────────────────────────────────────────
     case STATE.BOOKING_DATE: {
-      console.log(`📅 Date listId: ${listId}`);
-      if (!listId?.startsWith('date_')) {
+      const sel = listId;
+      if (!sel?.startsWith('date_')) {
         await sendText(to, phoneNumberId, isAr ? 'يرجى الاختيار من القائمة 👆' : 'Please select from the list 👆');
         return;
       }
-      const parts       = listId.replace('date_', '').split('-');
+
+      const dateVal     = sel.replace('date_', '');
+      const parts       = dateVal.split('-');
       const dateDisplay = `${parts[2]}/${parts[1]}/${parts[0]}`;
-      setState(to, { ...userState, state: STATE.BOOKING_TIME, data: { ...data, date: listId.replace('date_', ''), dateDisplay } });
+
+      await sendText(to, phoneNumberId, isAr ? '⏳ جاري التحقق من الأوقات المتاحة...' : '⏳ Checking available times...');
+
+      const slots = await getAvailableSlots(data.doctor.id, dateVal, data.procedure.duration);
+      if (slots.length === 0) {
+        await sendText(to, phoneNumberId, isAr ? '⚠️ لا توجد أوقات متاحة في هذا اليوم، اختر يوماً آخر.' : '⚠️ No available times on this date, please choose another.');
+        // Re-send date list
+        const dates = await getAvailableDates(data.doctor.id, data.procedure.duration);
+        await sendDateList(to, phoneNumberId, isAr, dates);
+        return;
+      }
+
+      setState(to, { ...userState, state: STATE.BOOKING_TIME, data: { ...data, date: dateVal, dateDisplay } });
+      const timeRows = slots.map(s => ({
+        id:    `slot_${formatTime(s)}`,
+        title: formatTimeDisplay(s, isAr),
+      }));
       await sendList(to, phoneNumberId,
         isAr ? 'اختر الوقت' : 'Choose Time',
-        isAr ? 'اختر الوقت المناسب:' : 'Select your preferred time:',
+        isAr ? `${dateDisplay} — اختر الوقت:` : `${dateDisplay} — Select a time:`,
         isAr ? 'اختر' : 'Select',
-        [{ title: isAr ? 'الأوقات المتاحة' : 'Available Times',
-           rows: Object.entries(TIME_LABELS).map(([id, t]) => ({ id, title: isAr ? t.ar : t.en })) }]
+        [{ title: isAr ? 'الأوقات المتاحة' : 'Available Times', rows: timeRows.slice(0, 10) }]
       );
       break;
     }
 
+    // ── Time ──────────────────────────────────────────────────────────────────
     case STATE.BOOKING_TIME: {
-      console.log(`🕐 Time listId: ${listId}`);
-      if (!listId?.startsWith('time_')) {
+      const sel = listId;
+      if (!sel?.startsWith('slot_')) {
         await sendText(to, phoneNumberId, isAr ? 'يرجى اختيار الوقت من القائمة 👆' : 'Please select a time from the list 👆');
         return;
       }
-      const tLabel      = TIME_LABELS[listId];
-      const timeDisplay = isAr ? tLabel.ar : tLabel.en;
-      setState(to, { ...userState, state: STATE.BOOKING_CONFIRM, data: { ...data, time: tLabel.val, timeDisplay } });
+      const timeVal     = sel.replace('slot_', '');
+      const [hh, mm]    = timeVal.split(':').map(Number);
+      const slotDate    = new Date(2000, 0, 1, hh, mm);
+      const timeDisplay = formatTimeDisplay(slotDate, isAr);
       const doctorName  = isAr ? data.doctor.name_ar : data.doctor.name_en;
+      const procName    = isAr ? data.procedure.name_ar : data.procedure.name_en;
+
+      setState(to, { ...userState, state: STATE.BOOKING_CONFIRM, data: { ...data, time: timeVal, timeDisplay } });
       await sendInteractiveButtons(to, phoneNumberId,
         isAr
-          ? `📋 *ملخص الحجز*\n\n👤 ${data.name}\n👨‍⚕️ ${doctorName}\n📅 ${data.dateDisplay}\n🕐 ${timeDisplay}\n\nتأكيد الموعد؟`
-          : `📋 *Booking Summary*\n\n👤 ${data.name}\n👨‍⚕️ ${doctorName}\n📅 ${data.dateDisplay}\n🕐 ${timeDisplay}\n\nConfirm your appointment?`,
+          ? `📋 *ملخص الحجز*\n\n👤 ${data.name}\n🦷 ${procName}\n👨‍⚕️ ${doctorName}\n📅 ${data.dateDisplay}\n🕐 ${timeDisplay}\n\nتأكيد الموعد؟`
+          : `📋 *Booking Summary*\n\n👤 ${data.name}\n🦷 ${procName}\n👨‍⚕️ ${doctorName}\n📅 ${data.dateDisplay}\n🕐 ${timeDisplay}\n\nConfirm your appointment?`,
         [
           { id: 'confirm_yes', title: isAr ? '✅ تأكيد' : '✅ Confirm' },
           { id: 'confirm_no',  title: isAr ? '❌ إلغاء' : '❌ Cancel'  },
@@ -278,6 +320,7 @@ async function handleBookingFlow(to, phoneNumberId, message, userState) {
       break;
     }
 
+    // ── Confirm ───────────────────────────────────────────────────────────────
     case STATE.BOOKING_CONFIRM: {
       if (buttonId === 'confirm_yes') {
         const result = await createAppointment({
@@ -286,34 +329,65 @@ async function handleBookingFlow(to, phoneNumberId, message, userState) {
           doctorName:   isAr ? data.doctor.name_ar : data.doctor.name_en,
           date:         data.date,
           time:         data.time,
+          procedure:    data.procedure,
         });
         if (result.success) {
-          const booking = { doctor: data.doctor, dateDisplay: data.dateDisplay, time: data.time, timeDisplay: data.timeDisplay };
+          const booking = {
+            doctor:      data.doctor,
+            procedure:   data.procedure,
+            dateDisplay: data.dateDisplay,
+            time:        data.time,
+            timeDisplay: data.timeDisplay,
+          };
           setState(to, { ...userState, state: STATE.REGISTRATION, data: { ...data, booking, regStep: null, awaitingCPR: false } });
+          const doctorLine = data.anyDoctor
+            ? ''
+            : (isAr ? `\n👨‍⚕️ ${data.doctor.name_ar}` : `\n👨‍⚕️ ${data.doctor.name_en}`);
           await sendText(to, phoneNumberId,
             isAr
-              ? `✅ *تم تأكيد الموعد!*\n\n👤 ${data.name}\n👨‍⚕️ ${data.doctor.name_ar}\n📅 ${data.dateDisplay} - 🕐 ${data.timeDisplay}`
-              : `✅ *Appointment Confirmed!*\n\n👤 ${data.name}\n👨‍⚕️ ${data.doctor.name_en}\n📅 ${data.dateDisplay} - 🕐 ${data.timeDisplay}`
+              ? `✅ *تم تأكيد الموعد!*\n\n👤 ${data.name}${doctorLine}\n🦷 ${data.procedure.name_ar}\n📅 ${data.dateDisplay} - 🕐 ${data.timeDisplay}`
+              : `✅ *Appointment Confirmed!*\n\n👤 ${data.name}${doctorLine}\n🦷 ${data.procedure.name_en}\n📅 ${data.dateDisplay} - 🕐 ${data.timeDisplay}`
           );
           await sendRegistrationRequest(to, phoneNumberId, lang);
         } else {
-          cancelTimeout(to);
-          clearState(to);
+          cancelTimeout(to); clearState(to);
           await sendText(to, phoneNumberId,
-            isAr
-              ? `عذراً، حدث خطأ 😔\nيرجى الاتصال بنا: ${config.clinic.phone}`
-              : `Sorry, an error occurred 😔\nPlease call us: ${config.clinic.phone}`
+            isAr ? `عذراً، حدث خطأ 😔\nيرجى الاتصال بنا: ${config.clinic.phone}` : `Sorry, an error occurred 😔\nPlease call us: ${config.clinic.phone}`
           );
         }
       } else {
-        cancelTimeout(to);
-        clearState(to);
+        cancelTimeout(to); clearState(to);
         await sendText(to, phoneNumberId, isAr ? '👍 تم الإلغاء.' : '👍 Cancelled.');
         await sendMainMenu(to, phoneNumberId, lang);
       }
       break;
     }
   }
+}
+
+async function sendDateList(to, phoneNumberId, isAr, dates) {
+  const arabicDays   = ['الأحد','الاثنين','الثلاثاء','الأربعاء','الخميس','الجمعة','السبت'];
+  const englishDays  = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  const arabicMonths = ['يناير','فبراير','مارس','أبريل','مايو','يونيو','يوليو','أغسطس','سبتمبر','أكتوبر','نوفمبر','ديسمبر'];
+
+  const rows = dates.map(dateStr => {
+    const [y, m, d] = dateStr.split('-').map(Number);
+    const dt  = new Date(y, m - 1, d);
+    const day = dt.getDay();
+    return {
+      id:    `date_${dateStr}`,
+      title: isAr
+        ? `${arabicDays[day]} ${d} ${arabicMonths[m - 1]}`
+        : `${englishDays[day]} ${String(d).padStart(2,'0')}/${String(m).padStart(2,'0')}`,
+    };
+  });
+
+  await sendList(to, phoneNumberId,
+    isAr ? 'اختر التاريخ' : 'Choose Date',
+    isAr ? 'اختر التاريخ المناسب:' : 'Select your preferred date:',
+    isAr ? 'اختر' : 'Select',
+    [{ title: isAr ? 'المواعيد المتاحة' : 'Available Dates', rows }]
+  );
 }
 
 // ── Main handler ──────────────────────────────────────────────────────────────
@@ -327,8 +401,7 @@ async function handleMessage(from, message, phoneNumberId) {
 
     const lower = message.text?.body?.trim().toLowerCase();
     if (RESET_WORDS.includes(lower)) {
-      cancelTimeout(from);
-      clearState(from);
+      cancelTimeout(from); clearState(from);
       await sendMainMenu(from, phoneNumberId, detectedLang);
       return;
     }
@@ -339,10 +412,7 @@ async function handleMessage(from, message, phoneNumberId) {
   const text     = message.type === 'text' ? message.text?.body?.trim() : null;
   const buttonId = message.interactive?.button_reply?.id;
 
-  // Schedule inactivity timeout whenever user is in a flow
-  if (state !== STATE.IDLE) {
-    scheduleTimeout(from, phoneNumberId, lang);
-  }
+  if (state !== STATE.IDLE) scheduleTimeout(from, phoneNumberId, lang);
 
   if (state === STATE.REGISTRATION || state === STATE.AWAITING_CPR_IMAGE) {
     await handleRegistration(from, phoneNumberId, message, userState);
