@@ -196,16 +196,16 @@ async function handleBookingFlow(to, phoneNumberId, message, userState) {
         [{
           title: isAr ? 'الأوقات المتاحة' : 'Available Times',
           rows: [
-            { id: 'time_07:00', title: '7:00 AM'  },
-            { id: 'time_08:00', title: '8:00 AM'  },
-            { id: 'time_09:00', title: '9:00 AM'  },
-            { id: 'time_10:00', title: '10:00 AM' },
-            { id: 'time_11:00', title: '11:00 AM' },
-            { id: 'time_14:00', title: '2:00 PM'  },
-            { id: 'time_15:00', title: '3:00 PM'  },
-            { id: 'time_16:00', title: '4:00 PM'  },
-            { id: 'time_17:00', title: '5:00 PM'  },
-            { id: 'time_19:00', title: '7:00 PM'  },
+            { id: 'time_07:00', title: isAr ? '٧:٠٠ صباحاً'  : '7:00 AM'  },
+            { id: 'time_08:00', title: isAr ? '٨:٠٠ صباحاً'  : '8:00 AM'  },
+            { id: 'time_09:00', title: isAr ? '٩:٠٠ صباحاً'  : '9:00 AM'  },
+            { id: 'time_10:00', title: isAr ? '١٠:٠٠ صباحاً' : '10:00 AM' },
+            { id: 'time_11:00', title: isAr ? '١١:٠٠ صباحاً' : '11:00 AM' },
+            { id: 'time_14:00', title: isAr ? '٢:٠٠ مساءً'   : '2:00 PM'  },
+            { id: 'time_15:00', title: isAr ? '٣:٠٠ مساءً'   : '3:00 PM'  },
+            { id: 'time_16:00', title: isAr ? '٤:٠٠ مساءً'   : '4:00 PM'  },
+            { id: 'time_17:00', title: isAr ? '٥:٠٠ مساءً'   : '5:00 PM'  },
+            { id: 'time_19:00', title: isAr ? '٧:٠٠ مساءً'   : '7:00 PM'  },
           ]
         }]
       );
@@ -340,7 +340,9 @@ async function handleMessage(from, message, phoneNumberId) {
   // Text message handling
   if (text) {
     const lower = text.toLowerCase();
-    const isGreeting = GREETINGS.some(g => lower.includes(g));
+    const words = lower.trim().split(/\s+/);
+    // Only treat as pure greeting if the message is short (1-3 words) and matches a greeting
+    const isGreeting = words.length <= 3 && GREETINGS.some(g => lower.includes(g));
 
     if (isGreeting) {
       await sendMainMenu(from, phoneNumberId, lang);
