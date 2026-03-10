@@ -352,6 +352,7 @@ async function handleMessage(from, message, phoneNumberId) {
     // Send to Claude for intelligent response
     const reply = await getClaudeResponse(text, lang);
     await sendText(from, phoneNumberId, reply);
+    setTimeout(() => sendMainMenu(from, phoneNumberId, lang), 1000);
     return;
   }
 
