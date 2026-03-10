@@ -310,6 +310,14 @@ async function handleMessage(from, message, phoneNumberId) {
     const detectedLang = detectLanguage(message.text?.body || '');
     userState = { ...userState, lang: detectedLang };
     setState(from, userState);
+
+    // Reset command — clears stuck state at any point
+    const lower = message.text?.body?.trim().toLowerCase();
+    if (['reset', 'cancel', 'إلغاء', 'الغاء', 'رجوع', 'مسح', 'ابدأ', 'start'].includes(lower)) {
+      clearState(from);
+      await sendMainMenu(from, phoneNumberId, detectedLang);
+      return;
+    }
   }
 
   const { lang, state } = userState;
