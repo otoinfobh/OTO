@@ -166,7 +166,6 @@ async function handleBookingFlow(to, phoneNumberId, message, userState) {
         return;
       }
       const doctor = config.doctors.find(d => d.id === sel.replace('doctor_', ''));
-      setState(to, { ...userState, state: STATE.BOOKING_DATE, data: { ...data, doctor } });
 
       // Build next 14 days list
       const dateRows = [];
@@ -193,7 +192,6 @@ async function handleBookingFlow(to, phoneNumberId, message, userState) {
         isAr ? 'اختر' : 'Select',
         [{ title: isAr ? 'المواعيد المتاحة' : 'Available Dates', rows: dateRows.slice(0, 10) }]
       );
-      // Store dateRows in state so we can look up display value
       setState(to, { ...userState, state: STATE.BOOKING_DATE, data: { ...data, doctor, dateRows } });
       break;
     }
