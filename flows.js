@@ -1,6 +1,6 @@
 const { sendText, sendInteractiveButtons, sendList } = require('./whatsapp');
 const { getState, setState, clearState, STATE } = require('./state');
-const { getClaudeResponse } = require('./claude');
+const { getClaudeResponse, scanCPRImage } = require('./claude');
 const { createAppointment } = require('./calendar');
 const config = require('./config');
 
@@ -26,6 +26,108 @@ async function sendMainMenu(to, phoneNumberId, lang) {
     isAr ? ' ' : ' ',
     [{ id: 'staff', title: isAr ? '👨‍⚕️ تحدث مع موظف' : '👨‍⚕️ Speak to Staff' }]
   );
+}
+
+async function sendRegistrationRequest(to, phoneNumberId, lang) {
+  const isAr = lang === 'ar';
+  await sendInteractiveButtons(to, phoneNumberId,
+    isAr
+      ? `لتأكيد موعدك، نحتاج بعض معلوماتك 📋\n\nيمكنك إما ملء البيانات يدوياً أو إرسال صورة بطاقة هويتك (CPR):`
+      : `To confirm your appointment, we need a few details 📋\n\nYou can either fill in the info manually or send a photo of your CPR card:`,
+    [
+      { id: 'reg_manual', title: isAr ? '✍️ إدخال يدوي' : '✍️ Enter Manually' },
+      { id: 'reg_cpr',    title: isAr ? '📷 إرسال CPR'  : '📷 Send CPR Card'  },
+    ]
+  );
+}
+
+async function notifyClinic(patientInfo, bookingData, lang) {
+  const isAr = lang === 'ar';
+  const clinicPhone = config.clinic.notifyPhone || config.clinic.phone;
+  const doctorName = bookingData?.doctor
+    ? (isAr ? bookingData.doctor.name_ar : bookingData.doctor.name_en)
+    : '-';
+
+  const message = isAr
+    ? `🆕 *مريض جديد - تسجيل موعد*\n\n👤 الاسم: ${patientInfo.fullName || '-'}\n🪪 الرقم الشخصي (CPR): ${patientInfo.cpr || '-'}\n🎂 تاريخ الميلاد: ${patientInfo.dob || '-'}\n🌍 الجنسية: ${patientInfo.nationality || '-'}\n👨‍⚕️ الطبيب: ${doctorName}\n📅 التاريخ: ${bookingData?.dateDisplay || '-'}\n🕐 الوقت: ${bookingData?.time || '-'}\n📞 رقم المريض: ${patientInfo.phone}`
+    : `🆕 *New Patient - Appointment Registration*\n\n👤 Name: ${patientInfo.fullName || '-'}\n🪪 CPR: ${patientInfo.cpr || '-'}\n🎂 DOB: ${patientInfo.dob || '-'}\n🌍 Nationality: ${patientInfo.nationality || '-'}\n👨‍⚕️ Doctor: ${doctorName}\n📅 Date: ${bookingData?.dateDisplay || '-'}\n🕐 Time: ${bookingData?.time || '-'}\n📞 Patient Phone: ${patientInfo.phone}`;
+
+  const { sendText: sendNotification } = require('./whatsapp');
+  await sendNotification(clinicPhone, process.env.PHONE_NUMBER_ID, message);
+}
+
+async function handleRegistration(to, phoneNumberId, message, userState) {
+  const { lang, data } = userState;
+  const isAr = lang === 'ar';
+  const text = message.type === 'text' ? message.text?.body?.trim() : null;
+  const buttonId = message.interactive?.button_reply?.id;
+
+  // CPR image received
+  if (message.type === 'image' && data.awaitingCPR) {
+    await sendText(to, phoneNumberId, isAr ? '⏳ جاري قراءة بطاقتك...' : '⏳ Reading your CPR card...');
+    try {
+      const imageId = message.image.id;
+      const extracted = await scanCPRImage(imageId);
+      const booking = data.booking || {};
+
+      await sendText(to, phoneNumberId,
+        isAr
+          ? `✅ *تم استخراج بياناتك:*\n\n👤 الاسم: ${extracted.fullName || '-'}\n🪪 CPR: ${extracted.cpr || '-'}\n🎂 تاريخ الميلاد: ${extracted.dob || '-'}\n🌍 الجنسية: ${extracted.nationality || '-'}\n\nشكراً! تم تسجيل موعدك ✅`
+          : `✅ *Extracted from your CPR card:*\n\n👤 Name: ${extracted.fullName || '-'}\n🪪 CPR: ${extracted.cpr || '-'}\n🎂 DOB: ${extracted.dob || '-'}\n🌍 Nationality: ${extracted.nationality || '-'}\n\nThank you! Your appointment is confirmed ✅`
+      );
+
+      await notifyClinic({ ...extracted, phone: to }, booking, lang);
+      clearState(to);
+    } catch (e) {
+      await sendText(to, phoneNumberId,
+        isAr
+          ? '⚠️ ما قدرت أقرأ الصورة. يرجى إرسالها بشكل أوضح أو اختر إدخال يدوي.'
+          : '⚠️ Could not read the image clearly. Please try a clearer photo or enter details manually.'
+      );
+    }
+    return;
+  }
+
+  // Manual entry selected
+  if (buttonId === 'reg_manual') {
+    setState(to, { ...userState, state: STATE.REGISTRATION, data: { ...data, regStep: 'waiting', awaitingCPR: false } });
+    await sendText(to, phoneNumberId,
+      isAr
+        ? `يرجى إرسال بياناتك بهذا الترتيب (كل معلومة في سطر):\n\nالاسم الكامل\nالرقم الشخصي (CPR)\nتاريخ الميلاد\nالجنسية\n\n*مثال:*\nأحمد محمد علي\n880101234\n01/01/1988\nبحريني`
+        : `Please send your details in this order (one per line):\n\nFull Name\nCPR Number\nDate of Birth\nNationality\n\n*Example:*\nAhmed Mohammed Ali\n880101234\n01/01/1988\nBahraini`
+    );
+    return;
+  }
+
+  // CPR photo option selected
+  if (buttonId === 'reg_cpr') {
+    setState(to, { ...userState, state: STATE.AWAITING_CPR_IMAGE, data: { ...data, awaitingCPR: true } });
+    await sendText(to, phoneNumberId,
+      isAr ? '📷 يرجى إرسال صورة واضحة لبطاقة الهوية (CPR) 🪪' : '📷 Please send a clear photo of your CPR card 🪪'
+    );
+    return;
+  }
+
+  // Manual text received - parse all lines at once
+  if (text && data.regStep === 'waiting') {
+    const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+    const patientInfo = {
+      fullName:    lines[0] || '-',
+      cpr:         lines[1] || '-',
+      dob:         lines[2] || '-',
+      nationality: lines[3] || '-',
+      phone: to,
+    };
+    const booking = data.booking || {};
+    await notifyClinic(patientInfo, booking, lang);
+    clearState(to);
+    await sendText(to, phoneNumberId,
+      isAr
+        ? `✅ *تم التسجيل بنجاح!*\n\n👤 ${patientInfo.fullName}\n📅 ${booking.dateDisplay || ''} ${booking.time ? '- 🕐 ' + booking.time : ''}\n\nنراك قريباً 😊`
+        : `✅ *Registration complete!*\n\n👤 ${patientInfo.fullName}\n📅 ${booking.dateDisplay || ''} ${booking.time ? '- 🕐 ' + booking.time : ''}\n\nSee you soon! 😊`
+    );
+    return;
+  }
 }
 
 async function handleBookingFlow(to, phoneNumberId, message, userState) {
@@ -140,14 +242,18 @@ async function handleBookingFlow(to, phoneNumberId, message, userState) {
           date: data.date,
           time: data.time,
         });
-        clearState(to);
+
         if (result.success) {
+          // Move to registration step
+          setState(to, { ...userState, state: STATE.REGISTRATION, data: { ...data, booking: { doctor: data.doctor, dateDisplay: data.dateDisplay, time: data.time }, regStep: null, awaitingCPR: false } });
           await sendText(to, phoneNumberId,
             isAr
-              ? `✅ *تم تأكيد موعدك!*\n\n👤 ${data.name}\n👨‍⚕️ ${data.doctor.name_ar}\n📅 ${data.dateDisplay} - 🕐 ${data.time}\n\nسنرسل لك تذكيراً قبل الموعد. نراك قريباً 😊`
-              : `✅ *Appointment Confirmed!*\n\n👤 ${data.name}\n👨‍⚕️ ${data.doctor.name_en}\n📅 ${data.dateDisplay} - 🕐 ${data.time}\n\nWe'll remind you before your appointment. See you soon! 😊`
+              ? `✅ *تم تأكيد الموعد!*\n\n👤 ${data.name}\n👨‍⚕️ ${data.doctor.name_ar}\n📅 ${data.dateDisplay} - 🕐 ${data.time}`
+              : `✅ *Appointment Confirmed!*\n\n👤 ${data.name}\n👨‍⚕️ ${data.doctor.name_en}\n📅 ${data.dateDisplay} - 🕐 ${data.time}`
           );
+          await sendRegistrationRequest(to, phoneNumberId, lang);
         } else {
+          clearState(to);
           await sendText(to, phoneNumberId,
             isAr
               ? `عذراً، حدث خطأ في الحجز 😔\nيرجى الاتصال بنا: ${config.clinic.phone}`
@@ -178,6 +284,12 @@ async function handleMessage(from, message, phoneNumberId) {
   const isAr = lang === 'ar';
   const text = message.type === 'text' ? message.text?.body?.trim() : null;
   const buttonId = message.interactive?.button_reply?.id;
+
+  // Registration flow
+  if (state === STATE.REGISTRATION || state === STATE.AWAITING_CPR_IMAGE) {
+    await handleRegistration(from, phoneNumberId, message, userState);
+    return;
+  }
 
   // If user is mid-booking, continue the flow
   if (state !== STATE.IDLE) {
@@ -241,7 +353,7 @@ async function handleMessage(from, message, phoneNumberId) {
     return;
   }
 
-  // Fallback for any other message type
+  // Fallback
   await sendMainMenu(from, phoneNumberId, lang);
 }
 
