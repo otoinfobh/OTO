@@ -112,8 +112,8 @@ async function handleRegistration(to, phoneNumberId, message, userState) {
     setState(to, { ...userState, state: STATE.REGISTRATION, data: { ...data, regStep: 'waiting', awaitingCPR: false } });
     await sendText(to, phoneNumberId,
       isAr
-        ? `أرسل بياناتك بهذا الترتيب (كل معلومة في سطر):\n\nالاسم الكامل\nالرقم الشخصي (CPR)\nتاريخ الميلاد\nالجنسية\n\n*مثال:*\nأحمد محمد علي\n880101234\n01/01/1988\nبحريني`
-        : `Please send your details in this order (one per line):\n\nFull Name\nCPR Number\nDate of Birth\nNationality\n\n*Example:*\nAhmed Mohammed Ali\n880101234\n01/01/1988\nBahraini`
+        ? `أرسل بياناتك بهذا الترتيب (كل معلومة في سطر):\n\nالاسم الكامل\nالرقم الشخصي (CPR)\nتاريخ الميلاد\nالجنسية`
+        : `Please send your details in this order (one per line):\n\nFull Name\nCPR Number\nDate of Birth\nNationality`
     );
     return;
   }
@@ -310,8 +310,8 @@ async function handleBookingFlow(to, phoneNumberId, message, userState) {
       setState(to, { ...userState, state: STATE.BOOKING_CONFIRM, data: { ...data, time: timeVal, timeDisplay } });
       await sendInteractiveButtons(to, phoneNumberId,
         isAr
-          ? `📋 *ملخص الحجز*\n\n👤 ${data.name}\n🦷 ${procName}\n👨‍⚕️ ${doctorName}\n📅 ${data.dateDisplay}\n🕐 ${timeDisplay}\n\nتأكيد الموعد؟`
-          : `📋 *Booking Summary*\n\n👤 ${data.name}\n🦷 ${procName}\n👨‍⚕️ ${doctorName}\n📅 ${data.dateDisplay}\n🕐 ${timeDisplay}\n\nConfirm your appointment?`,
+          ? `📋 *ملخص الحجز*\n\n👤 ${data.name}\n🦷 ${procName}\n👨‍⚕️ ${doctorName}\n📅 ${data.dateDisplay}\n🕐 ${timeDisplay}`
+          : `📋 *Booking Summary*\n\n👤 ${data.name}\n🦷 ${procName}\n👨‍⚕️ ${doctorName}\n📅 ${data.dateDisplay}\n🕐 ${timeDisplay}`,
         [
           { id: 'confirm_yes', title: isAr ? '✅ تأكيد' : '✅ Confirm' },
           { id: 'confirm_no',  title: isAr ? '❌ إلغاء' : '❌ Cancel'  },
@@ -326,6 +326,7 @@ async function handleBookingFlow(to, phoneNumberId, message, userState) {
         const result = await createAppointment({
           patientName:  data.name,
           patientPhone: to,
+          doctorId:     data.doctor.id,
           doctorName:   isAr ? data.doctor.name_ar : data.doctor.name_en,
           date:         data.date,
           time:         data.time,
