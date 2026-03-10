@@ -13,8 +13,7 @@ function getCalendarClient() {
   return google.calendar({ version: 'v3', auth });
 }
 
-// Returns all booked slots for a doctor on a given date (YYYY-MM-DD)
-// Each slot: { start: Date, end: Date }
+// Fetch ALL booked slots for a doctor on a given date from their own calendar
 async function getBookedSlots(doctorId, date) {
   const calendar = getCalendarClient();
   const doctor   = config.doctors.find(d => d.id === doctorId);
@@ -26,27 +25,26 @@ async function getBookedSlots(doctorId, date) {
 
   try {
     const res = await calendar.events.list({
-      calendarId:   process.env.GOOGLE_CALENDAR_ID || 'primary',
+      calendarId:   doctor.calendarId,
       timeMin:      dayStart.toISOString(),
       timeMax:      dayEnd.toISOString(),
       singleEvents: true,
       orderBy:      'startTime',
-      q:            doctor.name_en, // filter by doctor name in event title
     });
 
     return (res.data.items || [])
-      .filter(e => e.start?.dateTime)
+      .filter(e => e.start?.dateTime) // skip all-day events
       .map(e => ({
         start: new Date(e.start.dateTime),
         end:   new Date(e.end.dateTime),
       }));
   } catch (err) {
-    console.error('getBookedSlots error:', err.message);
+    console.error(`getBookedSlots error for ${doctor.name_en}:`, err.message);
     return [];
   }
 }
 
-// Returns available time slots for a doctor on a date, given procedure duration
+// Returns available time slots for a doctor on a date given procedure duration
 async function getAvailableSlots(doctorId, date, durationMinutes) {
   const booked    = await getBookedSlots(doctorId, date);
   const [y, m, d] = date.split('-').map(Number);
@@ -60,35 +58,16 @@ async function getAvailableSlots(doctorId, date, durationMinutes) {
     const slotEnd = new Date(cursor.getTime() + durationMinutes * 60000);
     if (slotEnd > end) break;
 
-    // Check overlap with any booked event
     const blocked = booked.some(b => cursor < b.end && slotEnd > b.start);
-    if (!blocked) {
-      slots.push(new Date(cursor));
-    }
+    if (!blocked) slots.push(new Date(cursor));
+
     cursor = new Date(cursor.getTime() + 30 * 60000); // advance 30 min
   }
 
   return slots;
 }
 
-// Returns the first available date+time for a doctor within 30 days
-async function findSoonestSlot(doctorId, durationMinutes) {
-  const { workDays } = config.clinic;
-  for (let i = 1; i <= 30; i++) {
-    const d = new Date();
-    d.setDate(d.getDate() + i);
-    if (!workDays.includes(d.getDay())) continue;
-
-    const dateStr = toDateStr(d);
-    const slots   = await getAvailableSlots(doctorId, dateStr, durationMinutes);
-    if (slots.length > 0) {
-      return { date: dateStr, slot: slots[0] };
-    }
-  }
-  return null;
-}
-
-// Returns dates that have at least one free slot within next 30 days
+// Returns up to 10 dates (within 30 days) that have at least one free slot
 async function getAvailableDates(doctorId, durationMinutes) {
   const { workDays } = config.clinic;
   const dates = [];
@@ -100,23 +79,37 @@ async function getAvailableDates(doctorId, durationMinutes) {
     const dateStr = toDateStr(d);
     const slots   = await getAvailableSlots(doctorId, dateStr, durationMinutes);
     if (slots.length > 0) dates.push(dateStr);
-    if (dates.length >= 10) break; // max 10 dates to show
+    if (dates.length >= 10) break;
   }
   return dates;
 }
 
-// For "any doctor" — pick doctor with most availability on soonest date
+// Returns the soonest available date+slot for a doctor within 30 days
+async function findSoonestSlot(doctorId, durationMinutes) {
+  const { workDays } = config.clinic;
+  for (let i = 1; i <= 30; i++) {
+    const d = new Date();
+    d.setDate(d.getDate() + i);
+    if (!workDays.includes(d.getDay())) continue;
+
+    const dateStr = toDateStr(d);
+    const slots   = await getAvailableSlots(doctorId, dateStr, durationMinutes);
+    if (slots.length > 0) return { date: dateStr, slot: slots[0] };
+  }
+  return null;
+}
+
+// For "any doctor" — pick the non-senior doctor with the soonest availability
 async function findBestDoctor(durationMinutes) {
   const nonSenior = config.doctors.filter(d => !d.senior);
-  let best = null, bestCount = -1;
+  let best = null, bestDate = null;
 
   for (const doc of nonSenior) {
     const result = await findSoonestSlot(doc.id, durationMinutes);
     if (!result) continue;
-    const slots = await getAvailableSlots(doc.id, result.date, durationMinutes);
-    if (slots.length > bestCount) {
-      bestCount = slots.length;
-      best      = { doctor: doc, date: result.date, slot: result.slot };
+    if (!bestDate || result.date < bestDate) {
+      bestDate = result.date;
+      best     = { doctor: doc, date: result.date, slot: result.slot };
     }
   }
   return best;
@@ -133,23 +126,21 @@ function formatTime(date) {
 }
 
 function formatTimeDisplay(date, isAr) {
-  let h = date.getHours(), m = date.getMinutes();
-  const mins = m === 0 ? '٠٠' : String(m).padStart(2, '0');
+  const h   = date.getHours();
+  const m   = date.getMinutes();
+  const h12 = h % 12 || 12;
+  const pad = String(m).padStart(2, '0');
   if (isAr) {
-    const arabicNums = ['٠','١','٢','٣','٤','٥','٦','٧','٨','٩'];
-    const toAr = n => String(n).split('').map(d => arabicNums[d] || d).join('');
+    const toAr   = n => String(n).split('').map(c => '٠١٢٣٤٥٦٧٨٩'[c] ?? c).join('');
     const period = h < 12 ? 'صباحاً' : 'مساءً';
-    const h12    = h % 12 || 12;
-    return `${toAr(h12)}:${toAr(m).padStart(2,'٠')} ${period}`;
-  } else {
-    const period = h < 12 ? 'AM' : 'PM';
-    const h12    = h % 12 || 12;
-    return `${h12}:${String(m).padStart(2,'0')} ${period}`;
+    return `${toAr(h12)}:${toAr(pad)} ${period}`;
   }
+  return `${h12}:${pad} ${h < 12 ? 'AM' : 'PM'}`;
 }
 
-async function createAppointment({ patientName, patientPhone, doctorName, date, time, procedure }) {
+async function createAppointment({ patientName, patientPhone, doctorId, doctorName, date, time, procedure }) {
   const calendar = getCalendarClient();
+  const doctor   = config.doctors.find(d => d.id === doctorId);
   const duration = procedure?.duration || 30;
 
   const [year, month, day] = date.split('-').map(Number);
@@ -158,29 +149,28 @@ async function createAppointment({ patientName, patientPhone, doctorName, date, 
   const startTime = new Date(year, month - 1, day, hour, minute || 0);
   const endTime   = new Date(startTime.getTime() + duration * 60000);
 
-  const procName = procedure ? ` - ${procedure.name_en}` : '';
   const event = {
-    summary:     `🦷 ${patientName} - ${doctorName}${procName}`,
+    summary:     `🦷 ${patientName} - ${procedure?.name_en || ''}`,
     description: `Patient: ${patientName}\nPhone: +${patientPhone}\nDoctor: ${doctorName}\nProcedure: ${procedure?.name_en || '-'}\nDuration: ${duration} min`,
     start:       { dateTime: startTime.toISOString(), timeZone: TZ },
     end:         { dateTime: endTime.toISOString(),   timeZone: TZ },
     reminders: {
       useDefault: false,
       overrides: [
-        { method: 'email',  minutes: 24 * 60 },
-        { method: 'popup',  minutes: 60       },
+        { method: 'email', minutes: 24 * 60 },
+        { method: 'popup', minutes: 60       },
       ],
     },
   };
 
   try {
     const res = await calendar.events.insert({
-      calendarId: process.env.GOOGLE_CALENDAR_ID || 'primary',
+      calendarId: doctor?.calendarId || process.env.GOOGLE_CALENDAR_ID,
       resource:   event,
     });
     return { success: true, eventId: res.data.id };
   } catch (err) {
-    console.error('Calendar createAppointment error:', err.message);
+    console.error('createAppointment error:', err.message);
     return { success: false, error: err.message };
   }
 }
