@@ -97,8 +97,8 @@ async function handleRegistration(to, phoneNumberId, message, userState) {
       cancelTimeout(to); clearState(to);
       await sendText(to, phoneNumberId,
         isAr
-          ? `✅ تم تسجيلك!\n\n👤 ${extracted.fullName || '-'}\n🪪 ${extracted.cpr || '-'}\n\nنراك قريباً 😊`
-          : `✅ Registered!\n\n👤 ${extracted.fullName || '-'}\n🪪 ${extracted.cpr || '-'}\n\nSee you soon! 😊`
+          ? `✅ *تم تأكيد موعدك وتسجيلك!*\n\n👤 ${extracted.fullName || '-'}\n🦷 ${data.booking?.procedure?.name_ar || ''}\n📅 ${data.booking?.dateDisplay || ''} - 🕐 ${data.booking?.timeDisplay || ''}\n\nنراك قريباً 😊`
+          : `✅ *Appointment confirmed and registration complete!*\n\n👤 ${extracted.fullName || '-'}\n🦷 ${data.booking?.procedure?.name_en || ''}\n📅 ${data.booking?.dateDisplay || ''} - 🕐 ${data.booking?.timeDisplay || ''}\n\nSee you soon! 😊`
       );
     } catch {
       await sendText(to, phoneNumberId,
@@ -136,8 +136,8 @@ async function handleRegistration(to, phoneNumberId, message, userState) {
     cancelTimeout(to); clearState(to);
     await sendText(to, phoneNumberId,
       isAr
-        ? `✅ *تم التسجيل!*\n\n👤 ${patientInfo.fullName}\n📅 ${data.booking?.dateDisplay || ''} - 🕐 ${data.booking?.timeDisplay || ''}\n\nنراك قريباً 😊`
-        : `✅ *Registration complete!*\n\n👤 ${patientInfo.fullName}\n📅 ${data.booking?.dateDisplay || ''} - 🕐 ${data.booking?.timeDisplay || ''}\n\nSee you soon! 😊`
+        ? `✅ *تم تأكيد موعدك وتسجيلك!*\n\n👤 ${patientInfo.fullName}\n🦷 ${data.booking?.procedure?.name_ar || ''}\n📅 ${data.booking?.dateDisplay || ''} - 🕐 ${data.booking?.timeDisplay || ''}\n\nنراك قريباً 😊`
+        : `✅ *Appointment confirmed and registration complete!*\n\n👤 ${patientInfo.fullName}\n🦷 ${data.booking?.procedure?.name_en || ''}\n📅 ${data.booking?.dateDisplay || ''} - 🕐 ${data.booking?.timeDisplay || ''}\n\nSee you soon! 😊`
     );
     return;
   }
@@ -341,14 +341,6 @@ async function handleBookingFlow(to, phoneNumberId, message, userState) {
             timeDisplay: data.timeDisplay,
           };
           setState(to, { ...userState, state: STATE.REGISTRATION, data: { ...data, booking, regStep: null, awaitingCPR: false } });
-          const doctorLine = data.anyDoctor
-            ? ''
-            : (isAr ? `\n👨‍⚕️ ${data.doctor.name_ar}` : `\n👨‍⚕️ ${data.doctor.name_en}`);
-          await sendText(to, phoneNumberId,
-            isAr
-              ? `✅ *تم تأكيد الموعد!*\n\n👤 ${data.name}${doctorLine}\n🦷 ${data.procedure.name_ar}\n📅 ${data.dateDisplay} - 🕐 ${data.timeDisplay}`
-              : `✅ *Appointment Confirmed!*\n\n👤 ${data.name}${doctorLine}\n🦷 ${data.procedure.name_en}\n📅 ${data.dateDisplay} - 🕐 ${data.timeDisplay}`
-          );
           await sendRegistrationRequest(to, phoneNumberId, lang);
         } else {
           cancelTimeout(to); clearState(to);
