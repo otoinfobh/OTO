@@ -3,6 +3,12 @@ const config     = require('./config');
 
 const TZ = 'Asia/Bahrain';
 
+// Bahrain is always UTC+3, no DST
+// Create a Date object for a specific clock time in Bahrain
+function bhDate(y, m, d, hour = 0, minute = 0) {
+  return new Date(Date.UTC(y, m - 1, d, hour - 3, minute, 0));
+}
+
 function getCalendarClient() {
   const auth = new google.auth.JWT(
     process.env.GOOGLE_CLIENT_EMAIL,
@@ -19,9 +25,9 @@ async function getBookedSlots(doctorId, date) {
   const doctor   = config.doctors.find(d => d.id === doctorId);
   if (!doctor) return [];
 
-  const [y, m, d] = date.split('-').map(Number);
-  const dayStart  = new Date(y, m - 1, d, 0, 0, 0);
-  const dayEnd    = new Date(y, m - 1, d, 23, 59, 59);
+  const [y, m, d2] = date.split('-').map(Number);
+  const dayStart   = bhDate(y, m, d2, 0, 0);
+  const dayEnd     = bhDate(y, m, d2, 23, 59);
 
   try {
     const res = await calendar.events.list({
@@ -32,8 +38,11 @@ async function getBookedSlots(doctorId, date) {
       orderBy:      'startTime',
     });
 
+    console.log(`📅 ${doctor.name_en} on ${date}: ${res.data.items?.length || 0} events fetched`);
+    res.data.items?.forEach(e => console.log(`  - ${e.summary || 'No title'}: ${e.start?.dateTime} → ${e.end?.dateTime}`));
+
     return (res.data.items || [])
-      .filter(e => e.start?.dateTime) // skip all-day events
+      .filter(e => e.start?.dateTime)
       .map(e => ({
         start: new Date(e.start.dateTime),
         end:   new Date(e.end.dateTime),
@@ -46,13 +55,13 @@ async function getBookedSlots(doctorId, date) {
 
 // Returns available time slots for a doctor on a date given procedure duration
 async function getAvailableSlots(doctorId, date, durationMinutes) {
-  const booked    = await getBookedSlots(doctorId, date);
-  const [y, m, d] = date.split('-').map(Number);
-  const slots     = [];
+  const booked     = await getBookedSlots(doctorId, date);
+  const [y, m, d2] = date.split('-').map(Number);
+  const slots      = [];
 
   const { startHour, endHour } = config.clinic;
-  let cursor = new Date(y, m - 1, d, startHour, 0, 0);
-  const end  = new Date(y, m - 1, d, endHour, 0, 0);
+  let cursor = bhDate(y, m, d2, startHour, 0);
+  const end  = bhDate(y, m, d2, endHour, 0);
 
   while (cursor < end) {
     const slotEnd = new Date(cursor.getTime() + durationMinutes * 60000);
@@ -61,9 +70,10 @@ async function getAvailableSlots(doctorId, date, durationMinutes) {
     const blocked = booked.some(b => cursor < b.end && slotEnd > b.start);
     if (!blocked) slots.push(new Date(cursor));
 
-    cursor = new Date(cursor.getTime() + 30 * 60000); // advance 30 min
+    cursor = new Date(cursor.getTime() + 30 * 60000);
   }
 
+  console.log(`🕐 Available slots for doctor ${doctorId} on ${date}: ${slots.map(s => formatTime(s)).join(', ')}`);
   return slots;
 }
 
@@ -122,12 +132,16 @@ function toDateStr(d) {
 }
 
 function formatTime(date) {
-  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+  // Convert UTC date to Bahrain time string HH:MM
+  const bh = new Date(date.getTime() + 3 * 60 * 60 * 1000);
+  return `${String(bh.getUTCHours()).padStart(2, '0')}:${String(bh.getUTCMinutes()).padStart(2, '0')}`;
 }
 
 function formatTimeDisplay(date, isAr) {
-  const h   = date.getHours();
-  const m   = date.getMinutes();
+  // Convert UTC date to Bahrain clock time
+  const bh  = new Date(date.getTime() + 3 * 60 * 60 * 1000);
+  const h   = bh.getUTCHours();
+  const m   = bh.getUTCMinutes();
   const h12 = h % 12 || 12;
   const pad = String(m).padStart(2, '0');
   if (isAr) {
@@ -146,8 +160,11 @@ async function createAppointment({ patientName, patientPhone, doctorId, doctorNa
   const [year, month, day] = date.split('-').map(Number);
   const [hour, minute]     = time.split(':').map(Number);
 
-  const startTime = new Date(year, month - 1, day, hour, minute || 0);
+  // Create start time in Bahrain timezone
+  const startTime = bhDate(year, month, day, hour, minute);
   const endTime   = new Date(startTime.getTime() + duration * 60000);
+
+  console.log(`📆 Creating appointment: ${date} ${time} BH time → UTC: ${startTime.toISOString()}`);
 
   const event = {
     summary:     `🦷 ${patientName} - ${procedure?.name_en || ''}`,
