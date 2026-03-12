@@ -2,7 +2,6 @@ const userStates = new Map();
 
 const STATE = {
   IDLE:               'IDLE',
-  BOOKING_NAME:       'BOOKING_NAME',
   BOOKING_PROCEDURE:  'BOOKING_PROCEDURE',
   BOOKING_DOCTOR:     'BOOKING_DOCTOR',
   BOOKING_DATE:       'BOOKING_DATE',
