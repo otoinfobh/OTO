@@ -105,8 +105,24 @@ async function handleRegistration(to, phoneNumberId, message, userState) {
     await sendText(to, phoneNumberId, isAr ? '⏳ جاري قراءة بطاقتك...' : '⏳ Reading your CPR card...');
     try {
       const extracted = await scanCPRImage(message.image.id);
+      const calResultCpr = await createAppointment({
+        patientName:  extracted.fullName || 'Patient',
+        patientPhone: to,
+        doctorId:     data.booking?.doctor?.id,
+        doctorName:   isAr ? data.booking?.doctor?.name_ar : data.booking?.doctor?.name_en,
+        date:         data.booking?.date,
+        time:         data.booking?.time,
+        procedure:    data.booking?.procedure,
+        patientInfo:  { ...extracted, phone: to },
+      });
       await notifyClinic({ ...extracted, phone: to }, data.booking, lang);
       cancelTimeout(to); clearState(to);
+      if (!calResultCpr.success) {
+        await sendText(to, phoneNumberId,
+          isAr ? `⚠️ تم تسجيل بياناتك لكن حدث خطأ في الحجز، سنتواصل معك لتأكيد الموعد.` : `⚠️ Info saved but a calendar error occurred, we'll contact you to confirm.`
+        );
+        return;
+      }
       await sendText(to, phoneNumberId,
         isAr
           ? `✅ *تم تأكيد موعدك وتسجيلك!*\n\n👤 ${extracted.fullName || '-'}\n🦷 ${data.booking?.procedure?.name_ar || ''}\n📅 ${data.booking?.dateDisplay || ''} - 🕐 ${data.booking?.timeDisplay || ''}\n\nنراك قريباً 😊`
@@ -144,8 +160,24 @@ async function handleRegistration(to, phoneNumberId, message, userState) {
       fullName: lines[0] || '-', cpr: lines[1] || '-',
       dob: lines[2] || '-', nationality: lines[3] || '-', phone: to,
     };
+    const calResult = await createAppointment({
+      patientName:  patientInfo.fullName,
+      patientPhone: to,
+      doctorId:     data.booking?.doctor?.id,
+      doctorName:   isAr ? data.booking?.doctor?.name_ar : data.booking?.doctor?.name_en,
+      date:         data.booking?.date,
+      time:         data.booking?.time,
+      procedure:    data.booking?.procedure,
+      patientInfo,
+    });
     await notifyClinic(patientInfo, data.booking, lang);
     cancelTimeout(to); clearState(to);
+    if (!calResult.success) {
+      await sendText(to, phoneNumberId,
+        isAr ? `⚠️ تم تسجيل بياناتك لكن حدث خطأ في الحجز، سنتواصل معك لتأكيد الموعد.` : `⚠️ Info saved but a calendar error occurred, we'll contact you to confirm.`
+      );
+      return;
+    }
     await sendText(to, phoneNumberId,
       isAr
         ? `✅ *تم تأكيد موعدك وتسجيلك!*\n\n👤 ${patientInfo.fullName}\n🦷 ${data.booking?.procedure?.name_ar || ''}\n📅 ${data.booking?.dateDisplay || ''} - 🕐 ${data.booking?.timeDisplay || ''}\n\nنراك قريباً 😊`
@@ -166,28 +198,6 @@ async function handleBookingFlow(to, phoneNumberId, message, userState) {
   console.log(`📋 State:${state} btn:${buttonId} list:${listId} txt:${text}`);
 
   switch (state) {
-
-    // ── Name ──────────────────────────────────────────────────────────────────
-    case STATE.BOOKING_NAME: {
-      if (!text) {
-        await sendText(to, phoneNumberId, isAr ? 'يرجى كتابة اسمك الكامل ✍️' : 'Please type your full name ✍️');
-        return;
-      }
-      setState(to, { ...userState, state: STATE.BOOKING_PROCEDURE, data: { ...data, name: text } });
-      await sendList(to, phoneNumberId,
-        isAr ? 'اختر الإجراء' : 'Choose Procedure',
-        isAr ? `شكراً ${text}! ما هو سبب زيارتك؟` : `Thanks ${text}! What brings you in today?`,
-        isAr ? 'اختر' : 'Select',
-        [{ title: isAr ? 'الإجراءات المتاحة' : 'Available Procedures',
-           rows: config.procedures.map(p => ({
-             id:          `proc_${p.id}`,
-             title:       isAr ? p.name_ar : p.name_en,
-             description: `${p.price} BD - ${p.duration} min`,
-           }))
-        }]
-      );
-      break;
-    }
 
     // ── Procedure ─────────────────────────────────────────────────────────────
     case STATE.BOOKING_PROCEDURE: {
@@ -321,8 +331,8 @@ async function handleBookingFlow(to, phoneNumberId, message, userState) {
       setState(to, { ...userState, state: STATE.BOOKING_CONFIRM, data: { ...data, time: timeVal, timeDisplay } });
       await sendInteractiveButtons(to, phoneNumberId,
         isAr
-          ? `📋 *ملخص الحجز*\n\n👤 ${data.name}\n🦷 ${procName}\n👨‍⚕️ ${doctorName}\n📅 ${data.dateDisplay}\n🕐 ${timeDisplay}`
-          : `📋 *Booking Summary*\n\n👤 ${data.name}\n🦷 ${procName}\n👨‍⚕️ ${doctorName}\n📅 ${data.dateDisplay}\n🕐 ${timeDisplay}`,
+          ? `📋 *ملخص الحجز*\n\n🦷 ${procName}\n👨‍⚕️ ${doctorName}\n📅 ${data.dateDisplay}\n🕐 ${timeDisplay}`
+          : `📋 *Booking Summary*\n\n🦷 ${procName}\n👨‍⚕️ ${doctorName}\n📅 ${data.dateDisplay}\n🕐 ${timeDisplay}`,
         [
           { id: 'confirm_yes', title: isAr ? '✅ تأكيد' : '✅ Confirm' },
           { id: 'confirm_no',  title: isAr ? '❌ إلغاء' : '❌ Cancel'  },
@@ -334,31 +344,16 @@ async function handleBookingFlow(to, phoneNumberId, message, userState) {
     // ── Confirm ───────────────────────────────────────────────────────────────
     case STATE.BOOKING_CONFIRM: {
       if (buttonId === 'confirm_yes') {
-        const result = await createAppointment({
-          patientName:  data.name,
-          patientPhone: to,
-          doctorId:     data.doctor.id,
-          doctorName:   isAr ? data.doctor.name_ar : data.doctor.name_en,
-          date:         data.date,
-          time:         data.time,
-          procedure:    data.procedure,
-        });
-        if (result.success) {
-          const booking = {
-            doctor:      data.doctor,
-            procedure:   data.procedure,
-            dateDisplay: data.dateDisplay,
-            time:        data.time,
-            timeDisplay: data.timeDisplay,
-          };
-          setState(to, { ...userState, state: STATE.REGISTRATION, data: { ...data, booking, regStep: null, awaitingCPR: false } });
-          await sendRegistrationRequest(to, phoneNumberId, lang);
-        } else {
-          cancelTimeout(to); clearState(to);
-          await sendText(to, phoneNumberId,
-            isAr ? `عذراً، حدث خطأ 😔\nيرجى الاتصال بنا: ${config.clinic.phone}` : `Sorry, an error occurred 😔\nPlease call us: ${config.clinic.phone}`
-          );
-        }
+        const booking = {
+          doctor:      data.doctor,
+          procedure:   data.procedure,
+          dateDisplay: data.dateDisplay,
+          date:        data.date,
+          time:        data.time,
+          timeDisplay: data.timeDisplay,
+        };
+        setState(to, { ...userState, state: STATE.REGISTRATION, data: { ...data, booking, regStep: null, awaitingCPR: false } });
+        await sendRegistrationRequest(to, phoneNumberId, lang);
       } else {
         cancelTimeout(to); clearState(to);
         await sendText(to, phoneNumberId, isAr ? '👍 تم الإلغاء.' : '👍 Cancelled.');
@@ -431,10 +426,19 @@ async function handleMessage(from, message, phoneNumberId) {
   if (buttonId) {
     switch (buttonId) {
       case 'book':
-        setState(from, { ...userState, state: STATE.BOOKING_NAME, data: {} });
+        setState(from, { ...userState, state: STATE.BOOKING_PROCEDURE, data: {} });
         scheduleTimeout(from, phoneNumberId, lang);
-        await sendText(from, phoneNumberId,
-          isAr ? 'بكل سرور! 😊 يرجى كتابة اسمك الكامل:' : 'Sure! 😊 Please type your full name:'
+        await sendList(from, phoneNumberId,
+          isAr ? 'اختر الإجراء' : 'Choose Procedure',
+          isAr ? 'ما هو سبب زيارتك؟' : 'What brings you in today?',
+          isAr ? 'اختر' : 'Select',
+          [{ title: isAr ? 'الإجراءات المتاحة' : 'Available Procedures',
+             rows: config.procedures.map(p => ({
+               id:          `proc_${p.id}`,
+               title:       isAr ? p.name_ar : p.name_en,
+               description: `${p.price} BD - ${p.duration} min`,
+             }))
+          }]
         );
         return;
 
