@@ -8,6 +8,18 @@ function detectLanguage(text) {
   return /[\u0600-\u06FF]/.test(text) ? 'ar' : 'en';
 }
 
+// Format HH:MM string directly to 12h display — no Date object, no timezone issues
+function formatTimeDisplay12(h, m, isAr) {
+  const h12 = h % 12 || 12;
+  const pad  = String(m).padStart(2, '0');
+  if (isAr) {
+    const toAr   = n => String(n).split('').map(c => '٠١٢٣٤٥٦٧٨٩'[c] ?? c).join('');
+    const period = h < 12 ? 'صباحاً' : 'مساءً';
+    return `${toAr(h12)}:${toAr(pad)} ${period}`;
+  }
+  return `${h12}:${pad} ${h < 12 ? 'AM' : 'PM'}`;
+}
+
 const GREETINGS   = ['hi', 'hello', 'hey', 'menu', 'مرحبا', 'هاي', 'السلام', 'أهلاً', 'اهلا', 'مرحباً', 'مساء', 'صباح', 'هلا'];
 const RESET_WORDS = ['reset', 'cancel', 'إلغاء', 'الغاء', 'رجوع', 'مسح', 'ابدأ', 'start'];
 
@@ -302,8 +314,7 @@ async function handleBookingFlow(to, phoneNumberId, message, userState) {
       }
       const timeVal     = sel.replace('slot_', '');
       const [hh, mm]    = timeVal.split(':').map(Number);
-      const slotDate    = new Date(2000, 0, 1, hh, mm);
-      const timeDisplay = formatTimeDisplay(slotDate, isAr);
+      const timeDisplay = formatTimeDisplay12(hh, mm, isAr);
       const doctorName  = isAr ? data.doctor.name_ar : data.doctor.name_en;
       const procName    = isAr ? data.procedure.name_ar : data.procedure.name_en;
 
