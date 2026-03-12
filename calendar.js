@@ -152,7 +152,7 @@ function formatTimeDisplay(date, isAr) {
   return `${h12}:${pad} ${h < 12 ? 'AM' : 'PM'}`;
 }
 
-async function createAppointment({ patientName, patientPhone, doctorId, doctorName, date, time, procedure }) {
+async function createAppointment({ patientName, patientPhone, doctorId, doctorName, date, time, procedure, patientInfo }) {
   const calendar = getCalendarClient();
   const doctor   = config.doctors.find(d => d.id === doctorId);
   const duration = procedure?.duration || 30;
@@ -168,7 +168,16 @@ async function createAppointment({ patientName, patientPhone, doctorId, doctorNa
 
   const event = {
     summary:     `🦷 ${patientName} - ${procedure?.name_en || ''}`,
-    description: `Patient: ${patientName}\nPhone: +${patientPhone}\nDoctor: ${doctorName}\nProcedure: ${procedure?.name_en || '-'}\nDuration: ${duration} min`,
+    description: [
+      `👤 Name: ${patientName}`,
+      `📞 Phone: +${patientPhone}`,
+      `🪪 CPR: ${patientInfo?.cpr || '-'}`,
+      `🎂 DOB: ${patientInfo?.dob || '-'}`,
+      `🌍 Nationality: ${patientInfo?.nationality || '-'}`,
+      `👨‍⚕️ Doctor: ${doctorName}`,
+      `🦷 Procedure: ${procedure?.name_en || '-'}`,
+      `⏱ Duration: ${duration} min`,
+    ].join('\n'),
     start:       { dateTime: startTime.toISOString(), timeZone: TZ },
     end:         { dateTime: endTime.toISOString(),   timeZone: TZ },
     reminders: {
