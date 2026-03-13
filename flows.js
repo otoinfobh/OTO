@@ -119,7 +119,7 @@ async function processCPRMedia(to, phoneNumberId, userState, mediaIds) {
       await sendText(to, phoneNumberId,
         isAr
           ? '⚠️ تم تسجيل بياناتك لكن حدث خطأ في الحجز، سنتواصل معك لتأكيد الموعد.'
-          : '⚠️ Info saved but a calendar error occurred, we'll contact you to confirm.'
+          : '⚠️ Info saved but a calendar error occurred, we\'ll contact you to confirm.'
       );
       return;
     }
@@ -224,7 +224,7 @@ async function handleRegistration(to, phoneNumberId, message, userState) {
     cancelTimeout(to); clearState(to);
     if (!calResult.success) {
       await sendText(to, phoneNumberId,
-        isAr ? `⚠️ تم تسجيل بياناتك لكن حدث خطأ في الحجز، سنتواصل معك لتأكيد الموعد.` : `⚠️ Info saved but a calendar error occurred, we'll contact you to confirm.`
+        isAr ? `⚠️ تم تسجيل بياناتك لكن حدث خطأ في الحجز، سنتواصل معك لتأكيد الموعد.` : `⚠️ Info saved but a calendar error occurred, we will contact you to confirm.`
       );
       return;
     }
@@ -516,7 +516,7 @@ async function handleMessage(from, message, phoneNumberId) {
         await sendText(from, phoneNumberId,
           isAr
             ? `👨‍⚕️ يمكنك الاتصال بنا مباشرة:\n📞 ${config.clinic.phone}\n\nأو سنتواصل معك في أقرب وقت ✅`
-            : `👨‍⚕️ Call us directly:\n📞 ${config.clinic.phone}\n\nOr we'll get back to you shortly ✅`
+            : `👨‍⚕️ Call us directly:\n📞 ${config.clinic.phone}\n\nOr we will get back to you shortly ✅`
         );
         return;
     }
