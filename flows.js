@@ -1,6 +1,6 @@
 const { sendText, sendInteractiveButtons, sendList } = require('./whatsapp');
 const { getState, setState, clearState, STATE } = require('./state');
-const { getClaudeResponse, scanCPRImage } = require('./claude');
+const { getClaudeResponse, scanCPRMedia } = require('./claude');
 const { createAppointment, getAvailableSlots, getAvailableDates, findSoonestSlot, findBestDoctor, formatTime, formatTimeDisplay } = require('./calendar');
 const config = require('./config');
 
@@ -95,43 +95,93 @@ async function notifyClinic(patientInfo, bookingData, lang) {
 }
 
 // ── Registration flow ─────────────────────────────────────────────────────────
+
+async function processCPRMedia(to, phoneNumberId, userState, mediaIds) {
+  const { lang, data } = userState;
+  const isAr = lang === 'ar';
+  // Lock so no further images trigger processing
+  setState(to, { ...userState, data: { ...data, awaitingCPR: false, cprMediaIds: [] } });
+  try {
+    const extracted = await scanCPRMedia(mediaIds);
+    const calResultCpr = await createAppointment({
+      patientName:  extracted.fullName || 'Patient',
+      patientPhone: to,
+      doctorId:     data.booking?.doctor?.id,
+      doctorName:   isAr ? data.booking?.doctor?.name_ar : data.booking?.doctor?.name_en,
+      date:         data.booking?.date,
+      time:         data.booking?.time,
+      procedure:    data.booking?.procedure,
+      patientInfo:  { ...extracted, phone: to },
+    });
+    await notifyClinic({ ...extracted, phone: to }, data.booking, lang);
+    cancelTimeout(to); clearState(to);
+    if (!calResultCpr.success) {
+      await sendText(to, phoneNumberId,
+        isAr
+          ? '⚠️ تم تسجيل بياناتك لكن حدث خطأ في الحجز، سنتواصل معك لتأكيد الموعد.'
+          : '⚠️ Info saved but a calendar error occurred, we'll contact you to confirm.'
+      );
+      return;
+    }
+    await sendText(to, phoneNumberId,
+      isAr
+        ? `✅ *تم تأكيد موعدك وتسجيلك!*
+
+👤 ${extracted.fullName || '-'}
+🦷 ${data.booking?.procedure?.name_ar || ''}
+📅 ${data.booking?.dateDisplay || ''} - 🕐 ${data.booking?.timeDisplay || ''}
+
+نراك قريباً 😊`
+        : `✅ *Appointment confirmed and registration complete!*
+
+👤 ${extracted.fullName || '-'}
+🦷 ${data.booking?.procedure?.name_en || ''}
+📅 ${data.booking?.dateDisplay || ''} - 🕐 ${data.booking?.timeDisplay || ''}
+
+See you soon! 😊`
+    );
+  } catch (err) {
+    console.error('CPR scan error:', err.message);
+    await sendText(to, phoneNumberId,
+      isAr
+        ? '⚠️ ما قدرت أقرأ البطاقة، حاول مجدداً أو اختر إدخال يدوي.'
+        : '⚠️ Could not read the card. Try again or enter manually.'
+    );
+  }
+}
+
 async function handleRegistration(to, phoneNumberId, message, userState) {
   const { lang, data } = userState;
   const isAr     = lang === 'ar';
   const text     = message.type === 'text' ? message.text?.body?.trim() : null;
   const buttonId = message.interactive?.button_reply?.id;
 
-  if (message.type === 'image' && data.awaitingCPR) {
-    await sendText(to, phoneNumberId, isAr ? '⏳ جاري قراءة بطاقتك...' : '⏳ Reading your CPR card...');
-    try {
-      const extracted = await scanCPRImage(message.image.id);
-      const calResultCpr = await createAppointment({
-        patientName:  extracted.fullName || 'Patient',
-        patientPhone: to,
-        doctorId:     data.booking?.doctor?.id,
-        doctorName:   isAr ? data.booking?.doctor?.name_ar : data.booking?.doctor?.name_en,
-        date:         data.booking?.date,
-        time:         data.booking?.time,
-        procedure:    data.booking?.procedure,
-        patientInfo:  { ...extracted, phone: to },
-      });
-      await notifyClinic({ ...extracted, phone: to }, data.booking, lang);
-      cancelTimeout(to); clearState(to);
-      if (!calResultCpr.success) {
-        await sendText(to, phoneNumberId,
-          isAr ? `⚠️ تم تسجيل بياناتك لكن حدث خطأ في الحجز، سنتواصل معك لتأكيد الموعد.` : `⚠️ Info saved but a calendar error occurred, we'll contact you to confirm.`
-        );
-        return;
-      }
+  // Handle image or PDF when awaiting CPR
+  const isMediaMessage = (message.type === 'image' || message.type === 'document') && data.awaitingCPR;
+  if (isMediaMessage) {
+    const mediaId = message.type === 'image' ? message.image?.id : message.document?.id;
+    if (!mediaId) return;
+
+    const existingMedia = data.cprMediaIds || [];
+
+    if (existingMedia.length === 0) {
+      // First media received — store it, wait 10 seconds for a second one
+      setState(to, { ...userState, data: { ...data, cprMediaIds: [mediaId] } });
       await sendText(to, phoneNumberId,
-        isAr
-          ? `✅ *تم تأكيد موعدك وتسجيلك!*\n\n👤 ${extracted.fullName || '-'}\n🦷 ${data.booking?.procedure?.name_ar || ''}\n📅 ${data.booking?.dateDisplay || ''} - 🕐 ${data.booking?.timeDisplay || ''}\n\nنراك قريباً 😊`
-          : `✅ *Appointment confirmed and registration complete!*\n\n👤 ${extracted.fullName || '-'}\n🦷 ${data.booking?.procedure?.name_en || ''}\n📅 ${data.booking?.dateDisplay || ''} - 🕐 ${data.booking?.timeDisplay || ''}\n\nSee you soon! 😊`
+        isAr ? '⏳ جاري قراءة بطاقتك...' : '⏳ Reading your CPR card...'
       );
-    } catch {
-      await sendText(to, phoneNumberId,
-        isAr ? '⚠️ ما قدرت أقرأ الصورة، حاول مجدداً أو اختر إدخال يدوي.' : '⚠️ Could not read the image. Try again or enter manually.'
-      );
+      // Schedule processing after 10 seconds if no second image arrives
+      setTimeout(async () => {
+        const freshState = getState(to);
+        if (freshState.data?.cprMediaIds?.length > 0 && freshState.data?.awaitingCPR) {
+          await processCPRMedia(to, phoneNumberId, freshState, freshState.data.cprMediaIds);
+        }
+      }, 10000);
+    } else {
+      // Second media arrived within 10 seconds — process both immediately
+      setState(to, { ...userState, data: { ...data, cprMediaIds: [...existingMedia, mediaId] } });
+      const freshState = getState(to);
+      await processCPRMedia(to, phoneNumberId, freshState, freshState.data.cprMediaIds);
     }
     return;
   }
