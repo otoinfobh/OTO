@@ -26,6 +26,7 @@ const RESET_WORDS = ['reset', 'cancel', 'إلغاء', 'الغاء', 'رجوع', 
 // ── 30-min inactivity timeout ─────────────────────────────────────────────────
 const TIMEOUT_MS = 30 * 60 * 1000;
 const timeouts   = new Map();
+const cprTimers  = new Map();
 
 function scheduleTimeout(from, phoneNumberId, lang) {
   if (timeouts.has(from)) clearTimeout(timeouts.get(from));
@@ -103,6 +104,20 @@ async function processCPRMedia(to, phoneNumberId, userState, mediaIds) {
   setState(to, { ...userState, data: { ...data, awaitingCPR: false, cprMediaIds: [] } });
   try {
     const extracted = await scanCPRMedia(mediaIds);
+    // Re-check slot is still free before booking (race condition guard)
+    const reCheckSlots = await getAvailableSlots(data.booking?.doctor?.id, data.booking?.date, data.booking?.procedure?.duration);
+    const stillFree = reCheckSlots.some(s => formatTime(s) === data.booking?.time);
+    if (!stillFree) {
+      clearState(to);
+      await sendText(to, phoneNumberId,
+        isAr
+          ? `⚠️ عذراً، تم حجز هذا الموعد للتو من شخص آخر 😔
+يرجى بدء حجز جديد واختيار وقت آخر.`
+          : `⚠️ Sorry, this slot was just taken by someone else 😔
+Please start a new booking and choose a different time.`
+      );
+      return;
+    }
     const calResultCpr = await createAppointment({
       patientName:  extracted.fullName || 'Patient',
       patientPhone: to,
@@ -165,20 +180,22 @@ async function handleRegistration(to, phoneNumberId, message, userState) {
     const existingMedia = data.cprMediaIds || [];
 
     if (existingMedia.length === 0) {
-      // First media received — store it, wait 10 seconds for a second one
+      // First media — store it, wait 10 seconds for a second one
       setState(to, { ...userState, data: { ...data, cprMediaIds: [mediaId] } });
       await sendText(to, phoneNumberId,
         isAr ? '⏳ جاري قراءة بطاقتك...' : '⏳ Reading your CPR card...'
       );
-      // Schedule processing after 10 seconds if no second image arrives
-      setTimeout(async () => {
+      const t = setTimeout(async () => {
+        cprTimers.delete(to);
         const freshState = getState(to);
         if (freshState.data?.cprMediaIds?.length > 0 && freshState.data?.awaitingCPR) {
           await processCPRMedia(to, phoneNumberId, freshState, freshState.data.cprMediaIds);
         }
       }, 10000);
+      cprTimers.set(to, t);
     } else {
-      // Second media arrived within 10 seconds — process both immediately
+      // Second media arrived — cancel timer, process both immediately
+      if (cprTimers.has(to)) { clearTimeout(cprTimers.get(to)); cprTimers.delete(to); }
       setState(to, { ...userState, data: { ...data, cprMediaIds: [...existingMedia, mediaId] } });
       const freshState = getState(to);
       await processCPRMedia(to, phoneNumberId, freshState, freshState.data.cprMediaIds);
@@ -210,6 +227,20 @@ async function handleRegistration(to, phoneNumberId, message, userState) {
       fullName: lines[0] || '-', cpr: lines[1] || '-',
       dob: lines[2] || '-', nationality: lines[3] || '-', phone: to,
     };
+    // Re-check slot is still free before booking (race condition guard)
+    const reCheckSlotsM = await getAvailableSlots(data.booking?.doctor?.id, data.booking?.date, data.booking?.procedure?.duration);
+    const stillFreeM = reCheckSlotsM.some(s => formatTime(s) === data.booking?.time);
+    if (!stillFreeM) {
+      clearState(to);
+      await sendText(to, phoneNumberId,
+        isAr
+          ? `⚠️ عذراً، تم حجز هذا الموعد للتو من شخص آخر 😔
+يرجى بدء حجز جديد واختيار وقت آخر.`
+          : `⚠️ Sorry, this slot was just taken by someone else 😔
+Please start a new booking and choose a different time.`
+      );
+      return;
+    }
     const calResult = await createAppointment({
       patientName:  patientInfo.fullName,
       patientPhone: to,
