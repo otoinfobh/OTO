@@ -1,9 +1,9 @@
-const axios = require('axios');
+const axios  = require('axios');
 const config = require('./config');
 
 async function getClaudeResponse(userMessage, lang) {
   const isAr = lang === 'ar';
-  const c = config.clinic;
+  const c    = config.clinic;
 
   const systemPrompt = isAr
     ? `أنتِ موظفة استقبال في ${c.name_ar}، عيادة أسنان في ${c.location_ar} بالبحرين. اسمك نور.
@@ -24,7 +24,6 @@ async function getClaudeResponse(userMessage, lang) {
 - لا تستخدمي "حبيبي" أو "حبيبتي"
 - لا تكتبي أكثر من جملة واحدة
 - تكلمي بلهجة بحرينية طبيعية فقط`
-
     : `You are a receptionist at ${c.name_en} in ${c.location_en}, Bahrain. Your name is Noor.
 
 Your reply must be **one sentence only** — no more, ever.
@@ -40,16 +39,16 @@ Never use more than one sentence.`;
     const response = await axios.post(
       'https://api.anthropic.com/v1/messages',
       {
-        model: 'claude-sonnet-4-20250514',
+        model:      'claude-sonnet-4-20250514',
         max_tokens: 300,
-        system: systemPrompt,
-        messages: [{ role: 'user', content: userMessage }]
+        system:     systemPrompt,
+        messages:   [{ role: 'user', content: userMessage }]
       },
       {
         headers: {
-          'x-api-key': process.env.CLAUDE_API_KEY,
-          'anthropic-version': '2023-06-01',
-          'Content-Type': 'application/json'
+          'x-api-key':          process.env.CLAUDE_API_KEY,
+          'anthropic-version':  '2023-06-01',
+          'Content-Type':       'application/json'
         }
       }
     );
@@ -62,54 +61,71 @@ Never use more than one sentence.`;
   }
 }
 
-async function scanCPRImage(imageId) {
-  // First fetch the image URL from WhatsApp Media API
+// Download a WhatsApp media file and return { base64, mimeType }
+async function downloadMedia(mediaId) {
   const mediaResponse = await axios.get(
-    `https://graph.facebook.com/v18.0/${imageId}`,
+    `https://graph.facebook.com/v18.0/${mediaId}`,
     { headers: { Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}` } }
   );
-  const imageUrl = mediaResponse.data.url;
-
-  // Download the image
-  const imageData = await axios.get(imageUrl, {
+  const url      = mediaResponse.data.url;
+  const fileData = await axios.get(url, {
     responseType: 'arraybuffer',
     headers: { Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}` }
   });
-  const base64Image = Buffer.from(imageData.data).toString('base64');
-  const mimeType = imageData.headers['content-type'] || 'image/jpeg';
+  return {
+    base64:   Buffer.from(fileData.data).toString('base64'),
+    mimeType: fileData.headers['content-type'] || 'image/jpeg',
+  };
+}
 
-  // Send to Claude vision
+// Build a Claude content block from a downloaded media item
+function mediaToContentBlock({ base64, mimeType }) {
+  const isPdf = mimeType === 'application/pdf';
+  if (isPdf) {
+    return {
+      type:   'document',
+      source: { type: 'base64', media_type: 'application/pdf', data: base64 }
+    };
+  }
+  return {
+    type:   'image',
+    source: { type: 'base64', media_type: mimeType, data: base64 }
+  };
+}
+
+// Accepts one or two media IDs (images or PDFs), extracts CPR info from all of them
+async function scanCPRMedia(mediaIds) {
+  const downloads = await Promise.all(mediaIds.map(downloadMedia));
+  const mediaBlocks = downloads.map(mediaToContentBlock);
+
   const response = await axios.post(
     'https://api.anthropic.com/v1/messages',
     {
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 300,
+      model:      'claude-sonnet-4-20250514',
+      max_tokens: 400,
       messages: [{
-        role: 'user',
+        role:    'user',
         content: [
-          {
-            type: 'image',
-            source: { type: 'base64', media_type: mimeType, data: base64Image }
-          },
+          ...mediaBlocks,
           {
             type: 'text',
-            text: 'This is a Bahrain CPR (Central Population Registry) ID card or a national ID card. Extract the following fields and return ONLY a JSON object with no extra text: { "fullName": "", "cpr": "", "dob": "", "nationality": "" }. If a field is not visible, use "-".'
+            text: 'These are images or a PDF of a Bahrain CPR (Central Population Registry) national ID card — possibly showing the front and/or back. Extract the following fields and return ONLY a valid JSON object with no extra text or markdown: { "fullName": "", "cpr": "", "dob": "", "nationality": "" }. Use the English name if available. If a field is not visible, use "-".'
           }
         ]
       }]
     },
     {
       headers: {
-        'x-api-key': process.env.CLAUDE_API_KEY,
-        'anthropic-version': '2023-06-01',
-        'Content-Type': 'application/json'
+        'x-api-key':          process.env.CLAUDE_API_KEY,
+        'anthropic-version':  '2023-06-01',
+        'Content-Type':       'application/json'
       }
     }
   );
 
-  const raw = response.data.content[0].text;
+  const raw   = response.data.content[0].text;
   const clean = raw.replace(/```json|```/g, '').trim();
   return JSON.parse(clean);
 }
 
-module.exports = { getClaudeResponse, scanCPRImage };
+module.exports = { getClaudeResponse, scanCPRMedia };
