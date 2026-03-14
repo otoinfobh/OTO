@@ -2,6 +2,7 @@ const { sendText, sendInteractiveButtons, sendList } = require('./whatsapp');
 const { getState, setState, clearState, STATE } = require('./state');
 const { getClaudeResponse, scanCPRMedia } = require('./claude');
 const { createAppointment, getAvailableSlots, getAvailableDates, findSoonestSlot, findBestDoctor, formatTime, formatTimeDisplay } = require('./calendar');
+const { deleteEvent } = require('./reminders');
 const config = require('./config');
 
 function detectLanguage(text) {
@@ -491,6 +492,81 @@ async function handleMessage(from, message, phoneNumberId) {
   const isAr     = lang === 'ar';
   const text     = message.type === 'text' ? message.text?.body?.trim() : null;
   const buttonId = message.interactive?.button_reply?.id;
+
+  // ── Reminder response handling ──────────────────────────────────────────────
+  const reminder = userState.reminderPending;
+  if (reminder) {
+    // Patient types cancel
+    if (text) {
+      const lower = text.toLowerCase().trim();
+      if (['cancel', 'إلغاء', 'الغاء', 'يلغي', 'الغي', 'كنسل'].includes(lower)) {
+        await deleteEvent(reminder.calendarId, reminder.eventId);
+        setState(from, { ...userState, reminderPending: null });
+        // Notify clinic
+        const { sendText: notify } = require('./whatsapp');
+        await notify(config.clinic.notifyPhone || config.clinic.phone, phoneNumberId,
+          `❌ *تم إلغاء موعد*
+
+${reminder.summary}
+📅 ${reminder.dateDisplay} - 🕐 ${reminder.timeDisplay}
+📞 ${from}`
+        );
+        await sendText(from, phoneNumberId,
+          isAr
+            ? '✅ تم إلغاء موعدك. نأمل أن نراك قريباً 😊'
+            : '✅ Your appointment has been cancelled. Hope to see you soon 😊'
+        );
+        await sendMainMenu(from, phoneNumberId, lang);
+        return;
+      }
+    }
+
+    // Confirm button
+    if (buttonId === 'reminder_confirm') {
+      setState(from, { ...userState, reminderPending: null });
+      await sendText(from, phoneNumberId,
+        isAr ? 'ممتاز! نراك غداً 😊🦷' : 'Great! See you tomorrow 😊🦷'
+      );
+      return;
+    }
+
+    // Reschedule button — delete old appointment, restart booking from doctor selection
+    if (buttonId === 'reminder_reschedule') {
+      await deleteEvent(reminder.calendarId, reminder.eventId);
+      // Notify clinic of cancellation
+      const { sendText: notify } = require('./whatsapp');
+      await notify(config.clinic.notifyPhone || config.clinic.phone, phoneNumberId,
+        `🔄 *طلب تغيير موعد*
+
+${reminder.summary}
+📅 ${reminder.dateDisplay} - 🕐 ${reminder.timeDisplay}
+📞 ${from}`
+      );
+      // Find procedure from old event summary or use a blank procedure
+      setState(from, {
+        ...userState,
+        reminderPending: null,
+        state: STATE.BOOKING_DOCTOR,
+        data: { procedure: reminder.doctor ? { id: 'consult', name_ar: 'كشف عام', name_en: 'General Consultation', duration: 30 } : {} }
+      });
+      await sendText(from, phoneNumberId,
+        isAr ? '🔄 تم إلغاء موعدك القديم. اختر الطبيب للموعد الجديد:' : '🔄 Old appointment cancelled. Choose a doctor for your new appointment:'
+      );
+      // Show doctor list
+      const rows = [
+        { id: 'doctor_any', title: isAr ? '👨‍⚕️ أي دكتور متاح' : '👨‍⚕️ Any available doctor' },
+        ...config.doctors.map(d => ({ id: `doctor_${d.id}`, title: isAr ? d.name_ar : d.name_en })),
+      ];
+      const { sendList } = require('./whatsapp');
+      await sendList(from, phoneNumberId,
+        isAr ? 'اختر الطبيب' : 'Choose Doctor',
+        isAr ? 'مع أي طبيب تفضل؟' : 'Which doctor do you prefer?',
+        isAr ? 'اختر' : 'Select',
+        [{ title: isAr ? 'الأطباء المتاحون' : 'Available Doctors', rows }]
+      );
+      return;
+    }
+  }
 
   if (state !== STATE.IDLE) scheduleTimeout(from, phoneNumberId, lang);
 

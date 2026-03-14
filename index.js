@@ -1,7 +1,8 @@
 require('dotenv').config();
-const express = require('express');
+const express    = require('express');
 const bodyParser = require('body-parser');
-const { handleMessage } = require('./flows');
+const { handleMessage }     = require('./flows');
+const { sendDailyReminders } = require('./reminders');
 
 const app = express();
 app.use(bodyParser.json());
@@ -67,6 +68,34 @@ app.post('/webhook', async (req, res) => {
     console.error('Webhook processing error:', error);
   }
 });
+
+// Test endpoint — hit this in browser to trigger reminders immediately
+app.get('/send-reminders', async (req, res) => {
+  const secret = req.query.secret;
+  if (secret !== process.env.WEBHOOK_VERIFY_TOKEN) {
+    return res.status(403).send('Unauthorized');
+  }
+  const phoneNumberId = process.env.PHONE_NUMBER_ID;
+  const count = await sendDailyReminders(phoneNumberId);
+  res.send(`✅ Reminders sent: ${count}`);
+});
+
+// Daily cron — checks every minute if it's 10:00 AM Bahrain time, then sends reminders
+let lastReminderDate = null;
+setInterval(async () => {
+  const now    = new Date();
+  const bhNow  = new Date(now.getTime() + 3 * 60 * 60 * 1000);
+  const hour   = bhNow.getUTCHours();
+  const minute = bhNow.getUTCMinutes();
+  const today  = bhNow.toISOString().split('T')[0];
+
+  if (hour === 10 && minute === 0 && lastReminderDate !== today) {
+    lastReminderDate = today;
+    console.log('⏰ 10:00 AM Bahrain — sending daily reminders...');
+    const phoneNumberId = process.env.PHONE_NUMBER_ID;
+    await sendDailyReminders(phoneNumberId);
+  }
+}, 60000); // check every minute
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
