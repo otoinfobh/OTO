@@ -434,6 +434,51 @@ async function handleBookingFlow(to, phoneNumberId, message, userState) {
           time:        data.time,
           timeDisplay: data.timeDisplay,
         };
+
+        // If rescheduling — skip registration, use stored patient info
+        if (data.isReschedule && data.patientInfo) {
+          const patientInfo = data.patientInfo;
+          const reCheckR = await getAvailableSlots(data.doctor.id, data.date, data.procedure?.duration);
+          const stillFreeR = reCheckR.some(s => formatTime(s) === data.time);
+          if (!stillFreeR) {
+            clearState(to);
+            await sendText(to, phoneNumberId,
+              isAr
+                ? '⚠️ عذراً، تم حجز هذا الموعد للتو. يرجى بدء حجز جديد.'
+                : '⚠️ Sorry, this slot was just taken. Please start a new booking.'
+            );
+            return;
+          }
+          const calR = await createAppointment({
+            patientName:  patientInfo.fullName,
+            patientPhone: to,
+            doctorId:     data.doctor.id,
+            doctorName:   isAr ? data.doctor.name_ar : data.doctor.name_en,
+            date:         data.date,
+            time:         data.time,
+            procedure:    data.procedure,
+            patientInfo,
+          });
+          await notifyClinic(patientInfo, { ...booking, doctor: data.doctor }, lang);
+          cancelTimeout(to); clearState(to);
+          await sendText(to, phoneNumberId,
+            isAr
+              ? `✅ *تم تأكيد موعدك الجديد!*
+
+👤 ${patientInfo.fullName}
+📅 ${data.dateDisplay} - 🕐 ${data.timeDisplay}
+
+نراك قريباً 😊`
+              : `✅ *New appointment confirmed!*
+
+👤 ${patientInfo.fullName}
+📅 ${data.dateDisplay} - 🕐 ${data.timeDisplay}
+
+See you soon! 😊`
+          );
+          return;
+        }
+
         setState(to, { ...userState, state: STATE.REGISTRATION, data: { ...data, booking, regStep: null, awaitingCPR: false } });
         await sendRegistrationRequest(to, phoneNumberId, lang);
       } else {
@@ -547,7 +592,11 @@ ${reminder.summary}
         ...userState,
         reminderPending: null,
         state: STATE.BOOKING_DOCTOR,
-        data: { procedure: reminder.doctor ? { id: 'consult', name_ar: 'كشف عام', name_en: 'General Consultation', duration: 30 } : {} }
+        data: {
+          isReschedule: true,
+          patientInfo:  reminder.patientInfo,
+          procedure:    { id: 'consult', name_ar: 'كشف عام', name_en: 'General Consultation', duration: 30 },
+        }
       });
       await sendText(from, phoneNumberId,
         isAr ? '🔄 تم إلغاء موعدك القديم. اختر الطبيب للموعد الجديد:' : '🔄 Old appointment cancelled. Choose a doctor for your new appointment:'

@@ -62,11 +62,13 @@ function formatBHDate(dateStr, isAr) {
 // Delete a calendar event
 async function deleteEvent(calendarId, eventId) {
   const calendar = getCalendarClient();
+  console.log(`🗑 Deleting event ${eventId} from calendar ${calendarId}`);
   try {
     await calendar.events.delete({ calendarId, eventId });
+    console.log('🗑 Event deleted successfully');
     return true;
   } catch (err) {
-    console.error('deleteEvent error:', err.message);
+    console.error('deleteEvent error:', err.message, '| calendarId:', calendarId, '| eventId:', eventId);
     return false;
   }
 }
@@ -107,15 +109,26 @@ async function sendDailyReminders(phoneNumberId) {
         const dateDisplay = formatBHDate(event.start.dateTime, isAr);
 
         // Store reminder context in state so we can handle button responses
+        // Parse patient info from event description
+        const desc = event.description || '';
+        const parsedName     = (desc.match(/👤 Name:\s*(.+)/)     || desc.match(/Patient:\s*(.+)/))?.[1]?.trim() || '-';
+        const parsedCpr      = (desc.match(/🪪 CPR:\s*(.+)/))?.[1]?.trim() || '-';
+        const parsedDob      = (desc.match(/🎂 DOB:\s*(.+)/))?.[1]?.trim() || '-';
+        const parsedNat      = (desc.match(/🌍 Nationality:\s*(.+)/))?.[1]?.trim() || '-';
+        const parsedPhone    = (desc.match(/📞 Phone:\s*\+?(\d+)/))?.[1]?.trim() || phone;
+        const parsedProc     = (desc.match(/🦷 Procedure:\s*(.+)/))?.[1]?.trim() || '';
+
         setState(phone, {
           ...userState,
           reminderPending: {
-            eventId:    event.id,
-            calendarId: doctor.calendarId,
+            eventId:     event.id,
+            calendarId:  doctor.calendarId,
             doctor,
             timeDisplay,
             dateDisplay,
-            summary:    event.summary,
+            summary:     event.summary,
+            patientInfo: { fullName: parsedName, cpr: parsedCpr, dob: parsedDob, nationality: parsedNat, phone: parsedPhone },
+            procedureName: parsedProc,
           }
         });
 
