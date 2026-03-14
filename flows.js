@@ -588,6 +588,11 @@ ${reminder.summary}
 📞 ${from}`
       );
       // Find procedure from old event summary or use a blank procedure
+      // Match procedure from stored name back to config
+      const matchedProcedure = config.procedures.find(p =>
+        p.name_en === reminder.procedureName || p.name_ar === reminder.procedureName
+      ) || config.procedures[0];
+
       setState(from, {
         ...userState,
         reminderPending: null,
@@ -595,7 +600,7 @@ ${reminder.summary}
         data: {
           isReschedule: true,
           patientInfo:  reminder.patientInfo,
-          procedure:    { id: 'consult', name_ar: 'كشف عام', name_en: 'General Consultation', duration: 30 },
+          procedure:    matchedProcedure,
         }
       });
       await sendText(from, phoneNumberId,
