@@ -1,7 +1,7 @@
 const { sendText, sendInteractiveButtons, sendList } = require('./whatsapp');
 const { getState, setState, clearState, STATE } = require('./state');
 const { getClaudeResponse, scanCPRMedia } = require('./claude');
-const { createAppointment, getAvailableSlots, getAvailableDates, findSoonestSlot, findBestDoctor, formatTime, formatTimeDisplay } = require('./calendar');
+const { createAppointment, getAvailableSlots, getAvailableDates, findSoonestSlot, findBestDoctor, findNextAppointment, formatTime, formatTimeDisplay } = require('./calendar');
 const { deleteEvent } = require('./reminders');
 const config = require('./config');
 
@@ -97,6 +97,17 @@ async function notifyClinic(patientInfo, bookingData, lang) {
 }
 
 // ── Registration flow ─────────────────────────────────────────────────────────
+
+async function notifyStaff(patientPhone, phoneNumberId, lastMessage, reason, isAr) {
+  const clinicPhone = config.clinic.notifyPhone || config.clinic.phone;
+  const msg = `⚠️ *تصعيد إلى الموظفين*
+
+📞 رقم المريض: +${patientPhone}
+❓ السبب: ${reason}
+💬 آخر رسالة: "${lastMessage.slice(0, 200)}"`;
+  const { sendText: notify } = require('./whatsapp');
+  await notify(clinicPhone, phoneNumberId, msg);
+}
 
 async function processCPRMedia(to, phoneNumberId, userState, mediaIds) {
   const { lang, data } = userState;
@@ -693,7 +704,120 @@ ${reminder.summary}
       return;
     }
 
+    // Gibberish detection — if message has no recognisable words (all symbols/numbers/random)
+    const hasWords = /[a-zA-Z؀-ۿ]{2,}/.test(text);
+    if (!hasWords) {
+      const gibberishCount = (userState.gibberishCount || 0) + 1;
+      setState(from, { ...userState, gibberishCount });
+      if (gibberishCount >= 2) {
+        setState(from, { ...userState, gibberishCount: 0 });
+        await notifyStaff(from, phoneNumberId, text, isAr ? 'رسائل غير مفهومة' : 'Gibberish messages', isAr);
+        await sendText(from, phoneNumberId,
+          isAr
+            ? 'عذراً، ما فهمت رسالتك. سيتواصل معك أحد من فريقنا قريباً 😊'
+            : 'Sorry, I could not understand your message. Someone from our team will contact you shortly 😊'
+        );
+        return;
+      }
+      await sendText(from, phoneNumberId,
+        isAr ? 'عذراً، ما فهمت. ممكن توضح أكثر؟' : 'Sorry, I did not understand. Could you clarify?'
+      );
+      return;
+    }
+
+    // Long message — escalate to staff
+    if (text.length > 1000) {
+      await notifyStaff(from, phoneNumberId, text, isAr ? 'رسالة طويلة' : 'Long message', isAr);
+      await sendText(from, phoneNumberId,
+        isAr
+          ? 'شكراً على رسالتك! سيتواصل معك أحد من فريقنا قريباً لمساعدتك 😊'
+          : 'Thank you for your message! Someone from our team will contact you shortly 😊'
+      );
+      return;
+    }
+
+    // Track free text exchange count — escalate after 20
+    const freeTextCount = (userState.freeTextCount || 0) + 1;
+    setState(from, { ...userState, freeTextCount });
+    if (freeTextCount >= 20) {
+      setState(from, { ...userState, freeTextCount: 0 });
+      await notifyStaff(from, phoneNumberId, text, isAr ? 'محادثة طويلة بدون حجز' : 'Long conversation without booking', isAr);
+      await sendText(from, phoneNumberId,
+        isAr
+          ? 'يبدو إنك تحتاج مساعدة أكثر 😊 سيتواصل معك أحد من فريقنا قريباً.'
+          : 'It seems you need more assistance 😊 Someone from our team will contact you shortly.'
+      );
+      return;
+    }
+
+    // Get Claude response
     const reply = await getClaudeResponse(text, lang);
+
+    // Handle intents returned by Claude
+    if (reply.includes('INTENT:CANCEL')) {
+      // Check if patient has a reminder pending or just guide them
+      setState(from, { ...userState, freeTextCount: 0 });
+      await sendText(from, phoneNumberId,
+        isAr
+          ? 'لإلغاء موعدك، اكتب "إلغاء" وسنقوم بإلغاء أقرب موعد لك. أو تواصل معنا على ' + config.clinic.phone
+          : 'To cancel your appointment, type "cancel" and we will cancel your next appointment. Or call us at ' + config.clinic.phone
+      );
+      return;
+    }
+
+    if (reply.includes('INTENT:RESCHEDULE')) {
+      setState(from, { ...userState, freeTextCount: 0 });
+      await sendText(from, phoneNumberId,
+        isAr
+          ? 'لتغيير موعدك، ستصلك رسالة تذكير قبل يوم من موعدك تتضمن خيار التغيير. أو تواصل معنا على ' + config.clinic.phone
+          : 'To reschedule, you will receive a reminder the day before your appointment with a reschedule option. Or call us at ' + config.clinic.phone
+      );
+      return;
+    }
+
+    if (reply.includes('INTENT:NEXT_APPOINTMENT')) {
+      setState(from, { ...userState, freeTextCount: 0 });
+      await sendText(from, phoneNumberId, isAr ? '⏳ جاري البحث عن موعدك...' : '⏳ Looking up your appointment...');
+      const result = await findNextAppointment(from);
+      if (!result) {
+        await sendText(from, phoneNumberId,
+          isAr ? 'ما لقيت أي موعد قادم لك. هل تريد حجز موعد؟' : 'I could not find any upcoming appointment for you. Would you like to book one?'
+        );
+        await sendMainMenu(from, phoneNumberId, lang);
+        return;
+      }
+      const { event, doctor } = result;
+      const bh          = new Date(new Date(event.start.dateTime).getTime() + 3 * 60 * 60 * 1000);
+      const dd          = String(bh.getUTCDate()).padStart(2, '0');
+      const mm          = String(bh.getUTCMonth() + 1).padStart(2, '0');
+      const yyyy        = bh.getUTCFullYear();
+      const h           = bh.getUTCHours();
+      const min         = String(bh.getUTCMinutes()).padStart(2, '0');
+      const h12         = h % 12 || 12;
+      const period      = isAr ? (h < 12 ? 'صباحاً' : 'مساءً') : (h < 12 ? 'AM' : 'PM');
+      const timeDisplay = isAr
+        ? `${String(h12).split('').map(c=>'٠١٢٣٤٥٦٧٨٩'[c]??c).join('')}:${String(min).split('').map(c=>'٠١٢٣٤٥٦٧٨٩'[c]??c).join('')} ${period}`
+        : `${h12}:${min} ${period}`;
+      const dateDisplay = `${dd}/${mm}/${yyyy}`;
+      const doctorName  = isAr ? doctor.name_ar : doctor.name_en;
+      await sendText(from, phoneNumberId,
+        isAr
+          ? `📅 *موعدك القادم:*
+
+👨‍⚕️ ${doctorName}
+📅 ${dateDisplay}
+🕐 ${timeDisplay}`
+          : `📅 *Your next appointment:*
+
+👨‍⚕️ ${doctorName}
+📅 ${dateDisplay}
+🕐 ${timeDisplay}`
+      );
+      setTimeout(() => sendMainMenu(from, phoneNumberId, lang), 800);
+      return;
+    }
+
+    // Normal Claude reply
     await sendText(from, phoneNumberId, reply);
     setTimeout(() => sendMainMenu(from, phoneNumberId, lang), 1000);
     return;

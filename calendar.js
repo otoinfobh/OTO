@@ -207,6 +207,41 @@ module.exports = {
   getAvailableDates,
   findSoonestSlot,
   findBestDoctor,
+  findNextAppointment,
   formatTime,
   formatTimeDisplay,
 };
+
+// Find next appointment for a patient by their phone number
+async function findNextAppointment(patientPhone) {
+  const calendar = getCalendarClient();
+  const now      = new Date();
+  const future   = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+  let   soonest  = null;
+
+  for (const doctor of config.doctors) {
+    try {
+      const res = await calendar.events.list({
+        calendarId:   doctor.calendarId,
+        timeMin:      now.toISOString(),
+        timeMax:      future.toISOString(),
+        singleEvents: true,
+        orderBy:      'startTime',
+      });
+
+      for (const event of (res.data.items || [])) {
+        if (!event.start?.dateTime) continue;
+        const desc  = event.description || '';
+        const phone = desc.match(/📞 Phone:\s*\+?(\d+)/)?.[1] || desc.match(/Phone:\s*\+?(\d+)/)?.[1];
+        if (phone && patientPhone.endsWith(phone.slice(-8))) {
+          if (!soonest || new Date(event.start.dateTime) < new Date(soonest.start.dateTime)) {
+            soonest = { event, doctor };
+          }
+        }
+      }
+    } catch (err) {
+      console.error(`findNextAppointment error for ${doctor.name_en}:`, err.message);
+    }
+  }
+  return soonest;
+}

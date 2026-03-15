@@ -1,60 +1,109 @@
 const axios  = require('axios');
 const config = require('./config');
 
-async function getClaudeResponse(userMessage, lang) {
+// Build full clinic context for Claude
+function buildSystemPrompt(lang, extraContext = '') {
   const isAr = lang === 'ar';
   const c    = config.clinic;
 
-  const systemPrompt = isAr
-    ? `أنتِ موظفة استقبال في ${c.name_ar}، عيادة أسنان في ${c.location_ar} بالبحرين. اسمك نور.
+  const procedureList = config.procedures.map(p =>
+    isAr
+      ? `- ${p.name_ar}: ${p.price} د.ب، مدة ${p.duration} دقيقة`
+      : `- ${p.name_en}: ${p.price} BD, duration ${p.duration} min`
+  ).join('\n');
 
-ردك يجب أن يكون **جملة واحدة فقط** — لا أكثر أبداً.
+  const doctorList = config.doctors.map(d =>
+    isAr ? `- ${d.name_ar}` : `- ${d.name_en}`
+  ).join('\n');
 
-أمثلة على الردود الصحيحة:
-- المريض يذكر ألماً محدداً (ضرس، أسنان...): "ما چوف شر، الله يشفيك 🙏"
-- المريض يقول السلام عليكم ثم يذكر ألماً: "وعليكم السلام، ما چوف شر الله يشفيك 🙏"
-- المريض يذكر ألماً غير محدد: "عسى ما شر، وين تحس بالألم؟"
-- المريض يقول يعطيك العافية: "يعطيك العافية"
-- المريض يقول تسلم: "يسلمك الله 🙏"
-- المريض يقول قوة: "الله يقويك 💪"
+  if (isAr) {
+    return `أنتِ موظفة استقبال ذكية في ${c.name_ar}، عيادة أسنان في ${c.location_ar} بالبحرين. اسمك نور.
+تتكلمين بلهجة بحرينية طبيعية دافئة.
 
-ممنوع:
-- لا تذكري أطباء أو أوقات أو خدمات
-- لا تسألي عن تفاصيل إلا إذا كان الألم غير محدد
+معلومات العيادة:
+- الموقع: ${c.location_ar}
+- أوقات العمل: ${c.hours_ar}
+- رقم الهاتف: ${c.phone}
+- أيام العمل: السبت إلى الخميس (الجمعة إجازة)
+
+الأطباء:
+${doctorList}
+
+الإجراءات والأسعار:
+${procedureList}
+
+تعليمات مهمة:
+- ردك يجب أن يكون قصيراً وواضحاً — جملة أو جملتين في الغالب
+- إذا سأل عن حجز موعد: قل له اضغط على زر "حجز موعد" في القائمة
+- إذا سأل عن إلغاء أو تغيير موعد: أجب بـ INTENT:CANCEL أو INTENT:RESCHEDULE
+- إذا سأل عن موعده القادم: أجب بـ INTENT:NEXT_APPOINTMENT
+- إذا سأل عن الموقع أو العنوان: أعطه العنوان مباشرة
+- إذا سأل عن الأسعار أو الخدمات: أعطه المعلومات من القائمة أعلاه
+- إذا سأل عن أفضل دكتور: قل "كل أطبائنا ممتازين 😊 اختر من القائمة وما تندم"
+- إذا كان المريض خايف أو قلقان: طمنه بجملة واحدة دافئة
+- إذا كان المريض زعلان أو يشكو: تعاطف معه وأخبره أن أحد سيتواصل معه
+- إذا سأل عن الأشعة أو الصور: ${config.features?.xraySharing ? 'قل له يراجع موظفي العيادة' : 'اعتذر منه وأخبره أن الأشعة تُعطى بشكل ورقي فقط عند العيادة'}
+- إذا سأل عن شيء ما تعرفينه: قل "ما عندي هذي المعلومة، تواصل معنا على ${c.phone}"
+- لا تذكري اسم دكتور بعينه كأفضل دكتور
 - لا تستخدمي "حبيبي" أو "حبيبتي"
-- لا تكتبي أكثر من جملة واحدة
-- تكلمي بلهجة بحرينية طبيعية فقط`
-    : `You are a receptionist at ${c.name_en} in ${c.location_en}, Bahrain. Your name is Noor.
+- تكلمي بلهجة بحرينية فقط
+${extraContext}`
+  } else {
+    return `You are an intelligent receptionist at ${c.name_en}, a dental clinic in ${c.location_en}, Bahrain. Your name is Noor.
+You speak in a warm, professional tone.
 
-Your reply must be **one sentence only** — no more, ever.
-- If the patient is in pain or discomfort: respond with a single short warm phrase
-- If they're joking: one short light reply
-- If they ask a question: answer it in one sentence
+Clinic info:
+- Location: ${c.location_en}
+- Hours: ${c.hours_en}
+- Phone: ${c.phone}
+- Working days: Saturday to Thursday (Friday closed)
 
-Never mention doctors, hours, or services.
-Never ask for details.
-Never use more than one sentence.`;
+Doctors:
+${doctorList}
 
+Procedures & Prices:
+${procedureList}
+
+Important instructions:
+- Keep replies short and clear — usually one or two sentences
+- If they want to book: tell them to tap the "Book Appointment" button in the menu
+- If they want to cancel or reschedule: reply with INTENT:CANCEL or INTENT:RESCHEDULE
+- If they ask about their next appointment: reply with INTENT:NEXT_APPOINTMENT
+- If they ask about location/address: give the address directly
+- If they ask about prices or services: answer from the list above
+- If they ask who is the best doctor: say "All our doctors are excellent 😊 choose from the list and you won't regret it"
+- If the patient is scared or anxious: reassure them warmly in one sentence
+- If the patient is angry or complaining: empathize and let them know someone will follow up
+- If they ask about X-rays or images: ${config.features?.xraySharing ? 'refer them to clinic staff' : 'apologize and explain that X-rays are only provided as hard copies at the clinic'}
+- If you don't know something: say "I don't have that information, please call us at ${c.phone}"
+- Never name a specific doctor as the best
+- Never use more than two sentences
+${extraContext}`
+  }
+}
+
+async function getClaudeResponse(userMessage, lang) {
   try {
     const response = await axios.post(
       'https://api.anthropic.com/v1/messages',
       {
         model:      'claude-sonnet-4-20250514',
         max_tokens: 300,
-        system:     systemPrompt,
+        system:     buildSystemPrompt(lang),
         messages:   [{ role: 'user', content: userMessage }]
       },
       {
         headers: {
-          'x-api-key':          process.env.CLAUDE_API_KEY,
-          'anthropic-version':  '2023-06-01',
-          'Content-Type':       'application/json'
+          'x-api-key':         process.env.CLAUDE_API_KEY,
+          'anthropic-version': '2023-06-01',
+          'Content-Type':      'application/json'
         }
       }
     );
     return response.data.content[0].text;
   } catch (error) {
     console.error('Claude API error:', error.response?.data || error.message);
+    const isAr = lang === 'ar';
     return isAr
       ? `عذراً، حدث خطأ. يرجى التواصل معنا على ${config.clinic.phone}`
       : `Sorry, an error occurred. Please call us at ${config.clinic.phone}`;
@@ -78,24 +127,16 @@ async function downloadMedia(mediaId) {
   };
 }
 
-// Build a Claude content block from a downloaded media item
 function mediaToContentBlock({ base64, mimeType }) {
   const isPdf = mimeType === 'application/pdf';
   if (isPdf) {
-    return {
-      type:   'document',
-      source: { type: 'base64', media_type: 'application/pdf', data: base64 }
-    };
+    return { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } };
   }
-  return {
-    type:   'image',
-    source: { type: 'base64', media_type: mimeType, data: base64 }
-  };
+  return { type: 'image', source: { type: 'base64', media_type: mimeType, data: base64 } };
 }
 
-// Accepts one or two media IDs (images or PDFs), extracts CPR info from all of them
 async function scanCPRMedia(mediaIds) {
-  const downloads = await Promise.all(mediaIds.map(downloadMedia));
+  const downloads   = await Promise.all(mediaIds.map(downloadMedia));
   const mediaBlocks = downloads.map(mediaToContentBlock);
 
   const response = await axios.post(
@@ -116,9 +157,9 @@ async function scanCPRMedia(mediaIds) {
     },
     {
       headers: {
-        'x-api-key':          process.env.CLAUDE_API_KEY,
-        'anthropic-version':  '2023-06-01',
-        'Content-Type':       'application/json'
+        'x-api-key':         process.env.CLAUDE_API_KEY,
+        'anthropic-version': '2023-06-01',
+        'Content-Type':      'application/json'
       }
     }
   );
@@ -128,4 +169,4 @@ async function scanCPRMedia(mediaIds) {
   return JSON.parse(clean);
 }
 
-module.exports = { getClaudeResponse, scanCPRMedia };
+module.exports = { getClaudeResponse, scanCPRMedia, buildSystemPrompt };

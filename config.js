@@ -24,6 +24,11 @@ module.exports = {
     { id: 'root',     name_ar: 'علاج عصب',           name_en: 'Root Canal',            price: 95,  duration: 60,  seniorOnly: false },
     { id: 'wisdom',   name_ar: 'خلع ضرس العقل',     name_en: 'Wisdom Tooth Removal',  price: 80,  duration: 120, seniorOnly: false },
   ],
+  // Feature flags
+  features: {
+    xraySharing: false, // set to true if clinic allows sending x-rays via WhatsApp
+  },
+
   // Keep services for the "Our Services" menu info
   services: [
     { name_ar: 'كشف عام',        name_en: 'General Consultation', price: 15 },
