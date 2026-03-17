@@ -81,7 +81,8 @@ async function sendMainMenu(to, phoneNumberId, lang) {
       { id: 'services', title: isAr ? '💰 خدماتنا'     : '💰 Our Services'     },
     ]
   );
-  await sendInteractiveButtons(to, phoneNumberId, ' ',
+  await sendInteractiveButtons(to, phoneNumberId,
+    isAr ? 'أو تحدث مع أحد من فريقنا:' : 'Or speak with our team:',
     [{ id: 'staff', title: isAr ? '👨‍⚕️ تحدث مع موظف' : '👨‍⚕️ Speak to Staff' }]
   );
 }
