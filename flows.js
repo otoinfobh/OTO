@@ -21,25 +21,14 @@ function formatTimeDisplay12(h, m, isAr) {
   return `${h12}:${pad} ${h < 12 ? 'AM' : 'PM'}`;
 }
 
-// Format a calendar dateTime string to Bahrain 12h display (reusable)
-function formatApptDisplay(dateTimeStr, isAr) {
-  const bh   = new Date(new Date(dateTimeStr).getTime() + 3 * 60 * 60 * 1000);
-  const dd   = String(bh.getUTCDate()).padStart(2, '0');
-  const mm   = String(bh.getUTCMonth() + 1).padStart(2, '0');
-  const yyyy = bh.getUTCFullYear();
-  const h    = bh.getUTCHours();
-  const min  = String(bh.getUTCMinutes()).padStart(2, '0');
-  const h12  = h % 12 || 12;
-  const toAr = n => String(n).split('').map(c => '٠١٢٣٤٥٦٧٨٩'[c] ?? c).join('');
-  const period = isAr ? (h < 12 ? 'صباحاً' : 'مساءً') : (h < 12 ? 'AM' : 'PM');
-  const timeDisplay = isAr
-    ? `${toAr(h12)}:${toAr(min)} ${period}`
-    : `${h12}:${min} ${period}`;
-  return { dateDisplay: `${dd}/${mm}/${yyyy}`, timeDisplay };
-}
-
 const GREETINGS   = ['hi', 'hello', 'hey', 'menu', 'مرحبا', 'هاي', 'السلام', 'أهلاً', 'اهلا', 'مرحباً', 'مساء', 'صباح', 'هلا'];
-const RESET_WORDS = ['reset', 'cancel', 'إلغاء', 'الغاء', 'رجوع', 'مسح', 'ابدأ', 'start'];
+const RESET_WORDS = [
+  'reset', 'cancel', 'start', 'menu',
+  'إلغاء', 'الغاء', 'رجوع', 'مسح', 'ابدأ',
+  'العود', 'ارجع', 'رجع', 'بالبداية', 'من البداية',
+  'لا ابي', 'ما ابي', 'مالي رجعني', 'مالي', 'خلاص',
+  'وقفت', 'اوقف', 'قف', 'بطل', 'بطلت', 'بغيت موعد',
+];
 
 // ── 30-min inactivity timeout ─────────────────────────────────────────────────
 const TIMEOUT_MS = 30 * 60 * 1000;
@@ -81,8 +70,7 @@ async function sendMainMenu(to, phoneNumberId, lang) {
       { id: 'services', title: isAr ? '💰 خدماتنا'     : '💰 Our Services'     },
     ]
   );
-  await sendInteractiveButtons(to, phoneNumberId,
-    isAr ? 'أو تحدث مع أحد من فريقنا:' : 'Or speak with our team:',
+  await sendInteractiveButtons(to, phoneNumberId, ' ',
     [{ id: 'staff', title: isAr ? '👨‍⚕️ تحدث مع موظف' : '👨‍⚕️ Speak to Staff' }]
   );
 }
@@ -430,7 +418,20 @@ async function handleBookingFlow(to, phoneNumberId, message, userState) {
     case STATE.BOOKING_TIME: {
       const sel = listId;
       if (!sel?.startsWith('slot_')) {
-        await sendText(to, phoneNumberId, isAr ? 'يرجى اختيار الوقت من القائمة 👆' : 'Please select a time from the list 👆');
+        const stuckCount = (data.stuckCount || 0) + 1;
+        setState(to, { ...userState, data: { ...data, stuckCount } });
+        if (stuckCount >= 2) {
+          setState(to, { ...userState, data: { ...data, stuckCount: 0 } });
+          await sendInteractiveButtons(to, phoneNumberId,
+            isAr ? 'يبدو إنك تريد الخروج من الحجز. ماذا تريد؟' : 'Looks like you want to exit. What would you like to do?',
+            [
+              { id: 'stuck_exit',     title: isAr ? '❌ إلغاء الحجز'   : '❌ Cancel Booking' },
+              { id: 'stuck_continue', title: isAr ? '↩️ متابعة الحجز' : '↩️ Continue'       },
+            ]
+          );
+        } else {
+          await sendText(to, phoneNumberId, isAr ? 'يرجى اختيار الوقت من القائمة 👆' : 'Please select a time from the list 👆');
+        }
         return;
       }
       const timeVal     = sel.replace('slot_', '');
@@ -555,7 +556,7 @@ async function handleMessage(from, message, phoneNumberId) {
     setState(from, userState);
 
     const lower = message.text?.body?.trim().toLowerCase();
-    if (RESET_WORDS.includes(lower)) {
+    if (RESET_WORDS.some(w => lower.includes(w))) {
       cancelTimeout(from); clearState(from);
       await sendMainMenu(from, phoneNumberId, detectedLang);
       return;
@@ -651,77 +652,17 @@ ${reminder.summary}
     }
   }
 
-  // ── Pending cancel / reschedule flow ─────────────────────────────────────────
-  const pendingCancel = userState.pendingCancel;
-  if (pendingCancel) {
 
-    // "Reschedule" chosen → delete old event, restart booking
-    if (buttonId === 'cancel_to_reschedule') {
-      await deleteEvent(pendingCancel.calendarId, pendingCancel.eventId);
-      const { sendText: notify } = require('./whatsapp');
-      await notify(config.clinic.notifyPhone || config.clinic.phone, phoneNumberId,
-        `🔄 *طلب تغيير موعد*\n\n${pendingCancel.summary}\n📅 ${pendingCancel.dateDisplay} - 🕐 ${pendingCancel.timeDisplay}\n📞 ${from}`
-      );
-      const matchedProcedure = config.procedures.find(p =>
-        p.name_en === pendingCancel.procedureName || p.name_ar === pendingCancel.procedureName
-      ) || config.procedures[0];
-      setState(from, {
-        ...userState,
-        pendingCancel: null,
-        state: STATE.BOOKING_DOCTOR,
-        data: { isReschedule: true, patientInfo: pendingCancel.patientInfo, procedure: matchedProcedure },
-      });
-      await sendText(from, phoneNumberId,
-        isAr ? '🔄 تم إلغاء موعدك القديم. اختر الطبيب للموعد الجديد:' : '🔄 Old appointment cancelled. Choose a doctor for your new appointment:'
-      );
-      const rows = [
-        { id: 'doctor_any', title: isAr ? '👨‍⚕️ أي دكتور متاح' : '👨‍⚕️ Any available doctor' },
-        ...config.doctors.map(d => ({ id: `doctor_${d.id}`, title: isAr ? d.name_ar : d.name_en })),
-      ];
-      await sendList(from, phoneNumberId,
-        isAr ? 'اختر الطبيب' : 'Choose Doctor',
-        isAr ? 'مع أي طبيب تفضل؟' : 'Which doctor do you prefer?',
-        isAr ? 'اختر' : 'Select',
-        [{ title: isAr ? 'الأطباء المتاحون' : 'Available Doctors', rows }]
-      );
-      return;
-    }
-
-    // "Cancel permanently" chosen → ask reason
-    if (buttonId === 'cancel_permanent') {
-      await sendInteractiveButtons(from, phoneNumberId,
-        isAr ? 'ما هو سبب الإلغاء؟' : 'What is the reason for cancellation?',
-        [
-          { id: 'cancel_reason_emergency', title: isAr ? '🚨 ظرف طارئ'        : '🚨 Emergency'        },
-          { id: 'cancel_reason_no_need',   title: isAr ? '🙅 لا أحتاج الموعد' : '🙅 No longer needed' },
-          { id: 'cancel_reason_other',     title: isAr ? '💬 سبب آخر'          : '💬 Other reason'     },
-        ]
-      );
-      return;
-    }
-
-    // Reason selected → delete event, notify clinic, confirm to patient
-    if (buttonId?.startsWith('cancel_reason_')) {
-      const reasons = {
-        cancel_reason_emergency: { ar: 'ظرف طارئ',        en: 'Emergency'        },
-        cancel_reason_no_need:   { ar: 'لا يحتاج الموعد', en: 'No longer needed' },
-        cancel_reason_other:     { ar: 'سبب آخر',          en: 'Other reason'     },
-      };
-      const reason = reasons[buttonId] || { ar: 'غير محدد', en: 'Unspecified' };
-      await deleteEvent(pendingCancel.calendarId, pendingCancel.eventId);
-      setState(from, { ...userState, pendingCancel: null });
-      const { sendText: notify } = require('./whatsapp');
-      await notify(config.clinic.notifyPhone || config.clinic.phone, phoneNumberId,
-        `❌ *تم إلغاء موعد*\n\n${pendingCancel.summary}\n📅 ${pendingCancel.dateDisplay} - 🕐 ${pendingCancel.timeDisplay}\n📞 ${from}\n❓ السبب: ${isAr ? reason.ar : reason.en}`
-      );
-      await sendText(from, phoneNumberId,
-        isAr
-          ? '✅ تم إلغاء موعدك. نأمل أن نراك قريباً 😊'
-          : '✅ Your appointment has been cancelled. Hope to see you soon 😊'
-      );
-      await sendMainMenu(from, phoneNumberId, lang);
-      return;
-    }
+  // ── Stuck booking escape buttons ─────────────────────────────────────────────
+  if (buttonId === 'stuck_exit') {
+    cancelTimeout(from); clearState(from);
+    await sendText(from, phoneNumberId, isAr ? '👍 تم إلغاء الحجز.' : '👍 Booking cancelled.');
+    await sendMainMenu(from, phoneNumberId, lang);
+    return;
+  }
+  if (buttonId === 'stuck_continue') {
+    await sendText(from, phoneNumberId, isAr ? '↩️ يرجى الاختيار من القائمة 👆' : '↩️ Please select from the list above 👆');
+    return;
   }
 
   if (state !== STATE.IDLE) scheduleTimeout(from, phoneNumberId, lang);
@@ -845,42 +786,23 @@ ${reminder.summary}
     const reply = await getClaudeResponse(text, lang);
 
     // Handle intents returned by Claude
-    if (reply.includes('INTENT:CANCEL') || reply.includes('INTENT:RESCHEDULE')) {
+    if (reply.includes('INTENT:CANCEL')) {
+      // Check if patient has a reminder pending or just guide them
       setState(from, { ...userState, freeTextCount: 0 });
-      await sendText(from, phoneNumberId, isAr ? '⏳ جاري البحث عن موعدك...' : '⏳ Looking up your appointment...');
-      const apptResult = await findNextAppointment(from);
-      if (!apptResult) {
-        await sendText(from, phoneNumberId,
-          isAr ? 'ما لقيت أي موعد قادم لك. هل تريد حجز موعد جديد؟' : 'I could not find any upcoming appointment for you. Would you like to book one?'
-        );
-        await sendMainMenu(from, phoneNumberId, lang);
-        return;
-      }
-      const { event, doctor } = apptResult;
-      const { dateDisplay, timeDisplay } = formatApptDisplay(event.start.dateTime, isAr);
-      const doctorName = isAr ? doctor.name_ar : doctor.name_en;
-      const desc = event.description || '';
-      const patientInfo = {
-        fullName:    (desc.match(/👤 Name:\s*(.+)/))?.[1]?.trim()         || '-',
-        cpr:         (desc.match(/🪪 CPR:\s*(.+)/))?.[1]?.trim()          || '-',
-        dob:         (desc.match(/🎂 DOB:\s*(.+)/))?.[1]?.trim()          || '-',
-        nationality: (desc.match(/🌍 Nationality:\s*(.+)/))?.[1]?.trim()  || '-',
-        phone:       from,
-      };
-      const procedureName = (desc.match(/🦷 Procedure:\s*(.+)/))?.[1]?.trim() || '';
-      setState(from, {
-        ...userState,
-        freeTextCount: 0,
-        pendingCancel: { eventId: event.id, calendarId: doctor.calendarId, doctor, patientInfo, procedureName, timeDisplay, dateDisplay, summary: event.summary || '' },
-      });
-      await sendInteractiveButtons(from, phoneNumberId,
+      await sendText(from, phoneNumberId,
         isAr
-          ? `📅 *موعدك القادم:*\n\n👨‍⚕️ ${doctorName}\n📅 ${dateDisplay}\n🕐 ${timeDisplay}\n\nماذا تريد أن تفعل؟`
-          : `📅 *Your upcoming appointment:*\n\n👨‍⚕️ ${doctorName}\n📅 ${dateDisplay}\n🕐 ${timeDisplay}\n\nWhat would you like to do?`,
-        [
-          { id: 'cancel_to_reschedule', title: isAr ? '📅 تغيير الموعد' : '📅 Reschedule' },
-          { id: 'cancel_permanent',     title: isAr ? '❌ إلغاء الموعد' : '❌ Cancel'      },
-        ]
+          ? 'لإلغاء موعدك، اكتب "إلغاء" وسنقوم بإلغاء أقرب موعد لك. أو تواصل معنا على ' + config.clinic.phone
+          : 'To cancel your appointment, type "cancel" and we will cancel your next appointment. Or call us at ' + config.clinic.phone
+      );
+      return;
+    }
+
+    if (reply.includes('INTENT:RESCHEDULE')) {
+      setState(from, { ...userState, freeTextCount: 0 });
+      await sendText(from, phoneNumberId,
+        isAr
+          ? 'لتغيير موعدك، ستصلك رسالة تذكير قبل يوم من موعدك تتضمن خيار التغيير. أو تواصل معنا على ' + config.clinic.phone
+          : 'To reschedule, you will receive a reminder the day before your appointment with a reschedule option. Or call us at ' + config.clinic.phone
       );
       return;
     }
