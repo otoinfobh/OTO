@@ -63,12 +63,16 @@ async function getAvailableSlots(doctorId, date, durationMinutes) {
   let cursor = bhDate(y, m, d2, startHour, 0);
   const end  = bhDate(y, m, d2, endHour, 0);
 
+  // Minimum 30 minutes from now
+  const cutoff = new Date(Date.now() + 30 * 60000);
+
   while (cursor < end) {
     const slotEnd = new Date(cursor.getTime() + durationMinutes * 60000);
     if (slotEnd > end) break;
 
+    const tooSoon = cursor < cutoff;
     const blocked = booked.some(b => cursor < b.end && slotEnd > b.start);
-    if (!blocked) slots.push(new Date(cursor));
+    if (!tooSoon && !blocked) slots.push(new Date(cursor));
 
     cursor = new Date(cursor.getTime() + 30 * 60000);
   }
