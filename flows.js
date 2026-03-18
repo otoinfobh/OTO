@@ -22,13 +22,7 @@ function formatTimeDisplay12(h, m, isAr) {
 }
 
 const GREETINGS   = ['hi', 'hello', 'hey', 'menu', 'مرحبا', 'هاي', 'السلام', 'أهلاً', 'اهلا', 'مرحباً', 'مساء', 'صباح', 'هلا'];
-const RESET_WORDS = [
-  'reset', 'cancel', 'start', 'menu',
-  'إلغاء', 'الغاء', 'رجوع', 'مسح', 'ابدأ',
-  'العود', 'ارجع', 'رجع', 'بالبداية', 'من البداية',
-  'لا ابي', 'ما ابي', 'مالي رجعني', 'مالي', 'خلاص',
-  'وقفت', 'اوقف', 'قف', 'بطل', 'بطلت', 'بغيت موعد',
-];
+const RESET_WORDS = ['reset', 'cancel', 'إلغاء', 'الغاء', 'رجوع', 'مسح', 'ابدأ', 'start'];
 
 // ── 30-min inactivity timeout ─────────────────────────────────────────────────
 const TIMEOUT_MS = 30 * 60 * 1000;
@@ -418,20 +412,7 @@ async function handleBookingFlow(to, phoneNumberId, message, userState) {
     case STATE.BOOKING_TIME: {
       const sel = listId;
       if (!sel?.startsWith('slot_')) {
-        const stuckCount = (data.stuckCount || 0) + 1;
-        setState(to, { ...userState, data: { ...data, stuckCount } });
-        if (stuckCount >= 2) {
-          setState(to, { ...userState, data: { ...data, stuckCount: 0 } });
-          await sendInteractiveButtons(to, phoneNumberId,
-            isAr ? 'يبدو إنك تريد الخروج من الحجز. ماذا تريد؟' : 'Looks like you want to exit. What would you like to do?',
-            [
-              { id: 'stuck_exit',     title: isAr ? '❌ إلغاء الحجز'   : '❌ Cancel Booking' },
-              { id: 'stuck_continue', title: isAr ? '↩️ متابعة الحجز' : '↩️ Continue'       },
-            ]
-          );
-        } else {
-          await sendText(to, phoneNumberId, isAr ? 'يرجى اختيار الوقت من القائمة 👆' : 'Please select a time from the list 👆');
-        }
+        await sendText(to, phoneNumberId, isAr ? 'يرجى اختيار الوقت من القائمة 👆' : 'Please select a time from the list 👆');
         return;
       }
       const timeVal     = sel.replace('slot_', '');
@@ -446,8 +427,8 @@ async function handleBookingFlow(to, phoneNumberId, message, userState) {
           ? `📋 *ملخص الحجز*\n\n🦷 ${procName}\n👨‍⚕️ ${doctorName}\n📅 ${data.dateDisplay}\n🕐 ${timeDisplay}`
           : `📋 *Booking Summary*\n\n🦷 ${procName}\n👨‍⚕️ ${doctorName}\n📅 ${data.dateDisplay}\n🕐 ${timeDisplay}`,
         [
-          { id: 'confirm_yes', title: isAr ? '✅ تأكيد' : '✅ Confirm' },
-          { id: 'confirm_no',  title: isAr ? '❌ إلغاء' : '❌ Cancel'  },
+          { id: 'confirm_yes', title: isAr ? '✅ تثبيت الموعد' : '✅ Confirm Booking' },
+          { id: 'confirm_no',  title: isAr ? '❌ تراجع' : '❌ Go Back'  },
         ]
       );
       break;
@@ -556,7 +537,7 @@ async function handleMessage(from, message, phoneNumberId) {
     setState(from, userState);
 
     const lower = message.text?.body?.trim().toLowerCase();
-    if (RESET_WORDS.some(w => lower.includes(w))) {
+    if (RESET_WORDS.includes(lower)) {
       cancelTimeout(from); clearState(from);
       await sendMainMenu(from, phoneNumberId, detectedLang);
       return;
@@ -650,19 +631,6 @@ ${reminder.summary}
       );
       return;
     }
-  }
-
-
-  // ── Stuck booking escape buttons ─────────────────────────────────────────────
-  if (buttonId === 'stuck_exit') {
-    cancelTimeout(from); clearState(from);
-    await sendText(from, phoneNumberId, isAr ? '👍 تم إلغاء الحجز.' : '👍 Booking cancelled.');
-    await sendMainMenu(from, phoneNumberId, lang);
-    return;
-  }
-  if (buttonId === 'stuck_continue') {
-    await sendText(from, phoneNumberId, isAr ? '↩️ يرجى الاختيار من القائمة 👆' : '↩️ Please select from the list above 👆');
-    return;
   }
 
   if (state !== STATE.IDLE) scheduleTimeout(from, phoneNumberId, lang);
