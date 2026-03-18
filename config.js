@@ -12,10 +12,10 @@ module.exports = {
     endHour:    22,
   },
   doctors: [
-    { id: '1', name_ar: 'د. علي جواد',     name_en: 'Dr. Ali Jawad',       senior: true,  calendarId: '6c971d9698e9c8bafb0bc36b14f0a73980bf5d58d32999da505ef8cdc68958ad@group.calendar.google.com' },
-    { id: '2', name_ar: 'د. زينة الفاضل',  name_en: 'Dr. Zaina Alfadhel',  senior: false, calendarId: '47629b1f558bf75874701f4618af950b2bf1bdd232f01e043b45e4252252c05c@group.calendar.google.com' },
-    { id: '3', name_ar: 'د. مريم الخباز',  name_en: 'Dr. Maryam Alkhabaz', senior: false, calendarId: '2a33b5527c061d13e9df103b056c9327fa96ed27db8e4af7c6ff639a2facd6b4@group.calendar.google.com' },
-    { id: '4', name_ar: 'د. حسن جابر',     name_en: 'Dr. Hasan Jaber',     senior: false, calendarId: '55b58b1198ea300bd08679498414fe81468388c1071b55110beef1fe94249654@group.calendar.google.com' },
+    { id: '1', name_ar: 'د. علي جواد',     name_en: 'Dr. Ali Jawad',       senior: true,  phone: '97333800506', calendarId: '6c971d9698e9c8bafb0bc36b14f0a73980bf5d58d32999da505ef8cdc68958ad@group.calendar.google.com' },
+    { id: '2', name_ar: 'د. زينة الفاضل',  name_en: 'Dr. Zaina Alfadhel',  senior: false, phone: '97300000002', calendarId: '47629b1f558bf75874701f4618af950b2bf1bdd232f01e043b45e4252252c05c@group.calendar.google.com' },
+    { id: '3', name_ar: 'د. مريم الخباز',  name_en: 'Dr. Maryam Alkhabaz', senior: false, phone: '97300000003', calendarId: '2a33b5527c061d13e9df103b056c9327fa96ed27db8e4af7c6ff639a2facd6b4@group.calendar.google.com' },
+    { id: '4', name_ar: 'د. حسن جابر',     name_en: 'Dr. Hasan Jaber',     senior: false, phone: '97300000004', calendarId: '55b58b1198ea300bd08679498414fe81468388c1071b55110beef1fe94249654@group.calendar.google.com' },
   ],
   procedures: [
     { id: 'consult',  name_ar: 'كشف عام',          name_en: 'General Consultation', price: 15,  duration: 30,  seniorOnly: false },

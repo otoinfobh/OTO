@@ -427,8 +427,8 @@ async function handleBookingFlow(to, phoneNumberId, message, userState) {
           ? `📋 *ملخص الحجز*\n\n🦷 ${procName}\n👨‍⚕️ ${doctorName}\n📅 ${data.dateDisplay}\n🕐 ${timeDisplay}`
           : `📋 *Booking Summary*\n\n🦷 ${procName}\n👨‍⚕️ ${doctorName}\n📅 ${data.dateDisplay}\n🕐 ${timeDisplay}`,
         [
-          { id: 'confirm_yes', title: isAr ? '✅ تثبيت الموعد' : '✅ Confirm Booking' },
-          { id: 'confirm_no',  title: isAr ? '❌ تراجع' : '❌ Go Back'  },
+          { id: 'confirm_yes', title: isAr ? '✅ تأكيد' : '✅ Confirm' },
+          { id: 'confirm_no',  title: isAr ? '❌ إلغاء' : '❌ Cancel'  },
         ]
       );
       break;
@@ -527,9 +527,190 @@ async function sendDateList(to, phoneNumberId, isAr, dates) {
   );
 }
 
+
+// ── Staff helpers ─────────────────────────────────────────────────────────────
+
+// Parse a day reference from Arabic/English text → returns a YYYY-MM-DD date string
+function parseTargetDate(text) {
+  const lower = text.toLowerCase();
+  const now   = new Date();
+  const bh    = new Date(now.getTime() + 3 * 60 * 60 * 1000);
+
+  // Tomorrow
+  if (['بكرة','بكره','باكر','غدا','غداً','tomorrow'].some(w => lower.includes(w))) {
+    const d = new Date(bh); d.setUTCDate(d.getUTCDate() + 1);
+    return toDateStr(d);
+  }
+
+  // Day names AR
+  const arDays = ['الأحد','الاثنين','الثلاثاء','الأربعاء','الخميس','الجمعة','السبت'];
+  for (let i = 0; i < arDays.length; i++) {
+    if (lower.includes(arDays[i])) {
+      const today = bh.getUTCDay();
+      let diff = i - today;
+      if (diff <= 0) diff += 7;
+      const d = new Date(bh); d.setUTCDate(d.getUTCDate() + diff);
+      return toDateStr(d);
+    }
+  }
+
+  // Day names EN
+  const enDays = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
+  for (let i = 0; i < enDays.length; i++) {
+    if (lower.includes(enDays[i])) {
+      const today = bh.getUTCDay();
+      let diff = i - today;
+      if (diff <= 0) diff += 7;
+      const d = new Date(bh); d.setUTCDate(d.getUTCDate() + diff);
+      return toDateStr(d);
+    }
+  }
+
+  // Default: today
+  return toDateStr(bh);
+}
+
+function toDateStr(d) {
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`;
+}
+
+function formatDateAr(dateStr) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m-1, d));
+  const arDays = ['الأحد','الاثنين','الثلاثاء','الأربعاء','الخميس','الجمعة','السبت'];
+  const arMonths = ['يناير','فبراير','مارس','أبريل','مايو','يونيو','يوليو','أغسطس','سبتمبر','أكتوبر','نوفمبر','ديسمبر'];
+  return `${arDays[dt.getUTCDay()]} ${d} ${arMonths[m-1]}`;
+}
+
+// Fetch and format schedule for a doctor on a given date
+async function sendStaffSchedule(to, phoneNumberId, doctor, dateStr) {
+  const { google } = require('googleapis');
+  const auth = new google.auth.JWT(
+    process.env.GOOGLE_CLIENT_EMAIL, null,
+    process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+    ['https://www.googleapis.com/auth/calendar']
+  );
+  const calendar = google.calendar({ version: 'v3', auth });
+
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const dayStart = new Date(Date.UTC(y, m-1, d, -3, 0, 0));
+  const dayEnd   = new Date(Date.UTC(y, m-1, d, 20, 59, 59));
+  const dateLabel = formatDateAr(dateStr);
+
+  try {
+    const res = await calendar.events.list({
+      calendarId:   doctor.calendarId,
+      timeMin:      dayStart.toISOString(),
+      timeMax:      dayEnd.toISOString(),
+      singleEvents: true,
+      orderBy:      'startTime',
+    });
+
+    const events = (res.data.items || []).filter(e => e.start?.dateTime && e.summary !== '🔴 إجازة' && e.summary !== '🔴 Sick Leave');
+
+    if (events.length === 0) {
+      await sendText(to, phoneNumberId, `📅 *جدولك — ${dateLabel}*\n\nما عندك أي مواعيد 😊`);
+      return;
+    }
+
+    const toAr = n => String(n).split('').map(c => '٠١٢٣٤٥٦٧٨٩'[c] ?? c).join('');
+    const lines = events.map((e, i) => {
+      const bh    = new Date(new Date(e.start.dateTime).getTime() + 3*60*60*1000);
+      const h     = bh.getUTCHours(), min = String(bh.getUTCMinutes()).padStart(2,'0');
+      const h12   = h % 12 || 12;
+      const time  = `${toAr(h12)}:${toAr(min)} ${h < 12 ? 'ص' : 'م'}`;
+      const desc  = e.description || '';
+      const name  = (desc.match(/👤 Name:\s*(.+)/))?.[1]?.trim() || e.summary?.replace(/🦷\s*/,'')?.split(' - ')?.[0] || 'عميل';
+      const proc  = (desc.match(/🦷 Procedure:\s*(.+)/))?.[1]?.trim() || '';
+      return `${toAr(i+1)}. 🕐 ${time} — ${name}${proc ? ` | ${proc}` : ''}`;
+    });
+
+    await sendText(to, phoneNumberId,
+      `📅 *جدولك — ${dateLabel}*\n\n${lines.join('\n')}\n\n👥 المجموع: ${toAr(events.length)} موعد`
+    );
+  } catch (err) {
+    console.error('sendStaffSchedule error:', err.message);
+    await sendText(to, phoneNumberId, '⚠️ ما قدرت أجلب جدولك، حاول مجدداً.');
+  }
+}
+
+// Block a full day on the doctor's calendar (sick/leave)
+async function blockDoctorDay(to, phoneNumberId, doctor, dateStr, reason) {
+  const { google } = require('googleapis');
+  const auth = new google.auth.JWT(
+    process.env.GOOGLE_CLIENT_EMAIL, null,
+    process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+    ['https://www.googleapis.com/auth/calendar']
+  );
+  const calendar = google.calendar({ version: 'v3', auth });
+
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const startTime = new Date(Date.UTC(y, m-1, d, -3, 0, 0));   // 00:00 BH
+  const endTime   = new Date(Date.UTC(y, m-1, d, 20, 59, 0));  // 23:59 BH
+  const dateLabel = formatDateAr(dateStr);
+  const isSick    = reason === 'sick';
+  const title     = isSick ? '🔴 إجازة مرضية' : '🔴 إجازة';
+
+  try {
+    await calendar.events.insert({
+      calendarId: doctor.calendarId,
+      resource: {
+        summary:  title,
+        start:    { dateTime: startTime.toISOString(), timeZone: 'Asia/Bahrain' },
+        end:      { dateTime: endTime.toISOString(),   timeZone: 'Asia/Bahrain' },
+      },
+    });
+
+    // Notify clinic
+    const { sendText: notify } = require('./whatsapp');
+    const clinicPhone = config.clinic.notifyPhone || config.clinic.phone;
+    await notify(clinicPhone, phoneNumberId,
+      `⚠️ *${isSick ? 'إجازة مرضية' : 'إجازة'}*\n\n👨‍⚕️ ${doctor.name_ar}\n📅 ${dateLabel}\n\nتم حجب التقويم تلقائياً.`
+    );
+
+    await sendText(to, phoneNumberId,
+      `✅ تم تسجيل ${isSick ? 'إجازتك المرضية' : 'إجازتك'} ليوم ${dateLabel}.\nتم إغلاق جدولك وتنبيه العيادة. سلامتك 😊`
+    );
+  } catch (err) {
+    console.error('blockDoctorDay error:', err.message);
+    await sendText(to, phoneNumberId, '⚠️ حدث خطأ، حاول مجدداً أو تواصل مع العيادة مباشرة.');
+  }
+}
+
 // ── Main handler ──────────────────────────────────────────────────────────────
 async function handleMessage(from, message, phoneNumberId) {
   let userState = getState(from);
+
+  // ── Staff commands (schedule / sick / leave) ──────────────────────────────
+  if (message.type === 'text') {
+    const staffDoc = config.doctors.find(d => d.phone === from);
+    if (staffDoc) {
+      const txt   = message.text?.body?.trim() || '';
+      const lower = txt.toLowerCase();
+
+      const SCHEDULE_TRIGGERS = ['جدولي','مواعيدي','شو عندي','ايش عندي','شنو عندي','schedule','my schedule','my appointments','what do i have','اليوم','today'];
+      const SICK_TRIGGERS     = ['تعبان','مريض','ما اقدر اجي','sick','not feeling well','مو بخير','ما احس بخير'];
+      const LEAVE_TRIGGERS    = ['اجازة','إجازة','leave','day off','مو موجود','مو حاضر'];
+
+      if (SICK_TRIGGERS.some(t => lower.includes(t))) {
+        const dateStr = parseTargetDate(txt);
+        await blockDoctorDay(from, phoneNumberId, staffDoc, dateStr, 'sick');
+        return;
+      }
+
+      if (LEAVE_TRIGGERS.some(t => lower.includes(t))) {
+        const dateStr = parseTargetDate(txt);
+        await blockDoctorDay(from, phoneNumberId, staffDoc, dateStr, 'leave');
+        return;
+      }
+
+      if (SCHEDULE_TRIGGERS.some(t => lower.includes(t))) {
+        const dateStr = parseTargetDate(txt);
+        await sendStaffSchedule(from, phoneNumberId, staffDoc, dateStr);
+        return;
+      }
+    }
+  }
 
   if (message.type === 'text') {
     const detectedLang = detectLanguage(message.text?.body || '');
@@ -537,7 +718,7 @@ async function handleMessage(from, message, phoneNumberId) {
     setState(from, userState);
 
     const lower = message.text?.body?.trim().toLowerCase();
-    if (RESET_WORDS.includes(lower)) {
+    if (RESET_WORDS.some(w => lower.includes(w))) {
       cancelTimeout(from); clearState(from);
       await sendMainMenu(from, phoneNumberId, detectedLang);
       return;
